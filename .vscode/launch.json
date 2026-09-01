@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debugger Backend File",
+            "type": "debugpy",
+            "request": "launch",
+
+            "program": "C:/Users/paa7bue/Documents/HTL Linien - Homburg Plant/Repository/backend/parallel_runner_v1.py",
+
+            "cwd": "C:/Users/paa7bue/Documents/HTL Linien - Homburg Plant/Repository/backend",
+
+            "console": "integratedTerminal",
+
+            "justMyCode": false
+        }
+    ]
+}

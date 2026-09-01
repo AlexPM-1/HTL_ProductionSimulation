@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Movement Simulation — Push / Kanban</title>
+<style>
+  /* ---- tokens + shared component classes, copied from
+     kanban_production_planner_dashboard.html so this page matches it
+     without importing the whole file. ---- */
+  :root{
+    --bg:            #F1F3F6;
+    --card:          #FFFFFF;
+    --border:        #E4E7EC;
+    --text:          #1B2330;
+    --text-muted:    #6B7280;
+    --text-faint:    #9CA3AF;
+    --blue:          #2563EB;
+    --blue-dark:     #1D4ED8;
+    --blue-light:    #EAF1FF;
+    --green:         #16A34A;
+    --red:           #DC2626;
+    --amber:         #B45309;
+    --shadow:        0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+    --shadow-md:     0 4px 10px rgba(16,24,40,.06), 0 2px 4px rgba(16,24,40,.05);
+    --radius:        12px;
+    --radius-sm:     8px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:flex;min-height:100vh;}
+
+  .sidebar{
+    width:320px;flex:0 0 320px;padding:20px 16px 40px;
+    border-right:1px solid var(--border);
+    background:linear-gradient(180deg,#FAFBFD 0%,var(--bg) 220px);
+    overflow-y:auto;
+  }
+  .brand{display:flex;align-items:center;gap:10px;margin:4px 4px 4px;}
+  .brand-mark{
+    width:34px;height:34px;border-radius:9px;
+    background:linear-gradient(135deg,var(--blue),#5B8DEF);
+    display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow);flex:0 0 auto;
+  }
+  .brand-mark svg{width:18px;height:18px;}
+  .brand h1{font-size:16.5px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .brand p{font-size:11.5px;color:var(--text-muted);margin:1px 0 0;}
+
+  .status-row{display:flex;align-items:center;gap:8px;margin:14px 4px 18px;font-size:12px;color:var(--text-muted);}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--text-faint);flex:0 0 auto;}
+  .status-dot.ok{background:var(--green);box-shadow:0 0 0 3px rgba(22,163,74,.15);}
+  .status-dot.bad{background:var(--red);box-shadow:0 0 0 3px rgba(220,38,38,.15);}
+  .status-dot.pending{background:var(--amber);box-shadow:0 0 0 3px rgba(180,83,9,.15);}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:14px;overflow:hidden;}
+  .card-head{padding:13px 16px;}
+  .card-head h2{font-size:12.5px;font-weight:700;margin:0;text-transform:uppercase;letter-spacing:.04em;color:var(--text);}
+  .card-body{padding:2px 16px 16px;}
+
+  .field{margin-bottom:13px;}
+  .field:last-child{margin-bottom:0;}
+  .field label{display:block;font-size:11.5px;font-weight:600;color:var(--text-muted);margin-bottom:5px;letter-spacing:.01em;}
+  select, input[type="number"], input[type="text"]{
+    width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);
+    font-size:13px;color:var(--text);background:#fff;font-family:inherit;
+  }
+  select:focus, input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-light);}
+  .hint{font-size:11px;color:var(--text-faint);margin-top:4px;}
+
+  .btn{
+    width:100%;padding:10px 14px;border:none;border-radius:var(--radius-sm);
+    font-size:13.5px;font-weight:600;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    transition:background .12s ease, transform .05s ease;
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn-primary{background:var(--blue);color:#fff;box-shadow:var(--shadow);}
+  .btn-primary:hover{background:var(--blue-dark);}
+  .btn-primary:disabled{background:#9CB8F5;cursor:not-allowed;}
+  .btn-ghost{background:#fff;color:var(--text);border:1px solid var(--border);}
+  .btn-ghost:hover{background:#F8F9FB;}
+  .spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .error-banner{background:#FEF2F2;border:1px solid #FCA5A5;color:#991B1B;padding:10px 12px;border-radius:var(--radius-sm);font-size:12px;margin-bottom:14px;line-height:1.5;}
+
+  .mode-row{display:flex;gap:4px;background:#E8EAEE;padding:4px;border-radius:10px;margin-bottom:14px;}
+  .mode-btn{flex:1;padding:8px 0;border:none;border-radius:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);cursor:pointer;background:transparent;transition:all .12s ease;}
+  .mode-btn.active{background:#fff;color:var(--blue-dark);box-shadow:var(--shadow);}
+
+  .main{flex:1;min-width:0;padding:20px 28px 40px;}
+  .topbar{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;}
+  .topbar h1{font-size:20px;margin:0 0 3px;letter-spacing:-.01em;}
+  .topbar p{margin:0;color:var(--text-muted);font-size:13px;}
+  .topbar a{font-size:12.5px;color:var(--blue-dark);text-decoration:none;font-weight:600;}
+  .topbar a:hover{text-decoration:underline;}
+
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 22px 26px;}
+  .panel-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px;}
+  .panel-head h2{font-size:15px;margin:0 0 3px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+  .panel-head p{margin:0;font-size:12.5px;color:var(--text-muted);}
+  .product-class-badge{display:inline-flex;align-items:center;font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--blue-dark);background:var(--blue-light);border-radius:999px;padding:3px 10px;text-transform:none;}
+  .product-class-badge .badge-key{color:var(--text-muted);font-weight:600;margin-right:4px;}
+
+  .empty-state{text-align:center;padding:60px 20px;color:var(--text-muted);}
+  .empty-state .icon{font-size:30px;margin-bottom:10px;}
+  .empty-state h3{color:var(--text);font-size:15px;margin:0 0 6px;}
+  .empty-state p{font-size:12.5px;max-width:420px;margin:0 auto;color:var(--text-muted);}
+
+  /* ---- movement-page-specific ---- */
+  .track-wrap{overflow-x:auto;background:#FCFCFD;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;}
+  /* No min-width here: the SVG has a viewBox, so width:100%/height:auto is
+     enough for it to scale continuously with its container (and therefore
+     with browser zoom). A hard min-width used to stop it shrinking past a
+     certain point, so once the container got narrower than that (e.g. at
+     higher page zoom, where the layout viewport itself shrinks) the SVG
+     just got clipped and the wrapper became scrollable instead of the
+     drawing actually resizing. */
+  #trackSvg{display:block;width:100%;height:auto;}
+
+  .player-controls{display:flex;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap;}
+  .player-controls .play-btn{width:auto;padding:9px 18px;flex:0 0 auto;}
+  .player-controls input[type="range"]{flex:1;min-width:180px;accent-color:var(--blue);}
+  .player-controls select{width:auto;flex:0 0 auto;}
+  .time-label{font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--text-muted);min-width:70px;text-align:right;}
+  .goto-time{display:flex;align-items:center;gap:5px;flex:0 0 auto;}
+  .goto-time label{font-size:11.5px;color:var(--text-muted);font-weight:600;white-space:nowrap;}
+  .goto-time input[type="text"]{width:132px;padding:6px 8px;font-variant-numeric:tabular-nums;}
+
+  /* minmax(0,1fr), not plain 1fr: a bare 1fr track can't shrink below its
+     content's natural (min-content) width, which is the grid equivalent
+     of flexbox's min-width:auto gotcha. Without the minmax(0,...), this
+     row refuses to narrow past a certain point, forcing the whole panel
+     (and everything sized as a % of it, including the diagrams below)
+     wider than the viewport instead of actually reflowing smaller. */
+  .info-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:18px;}
+  .info-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow);}
+  .info-card .label{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);font-weight:700;margin-bottom:5px;}
+  .info-card .value{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;}
+
+  /* ---- event log: per-station / per-transition timestamps with a
+     filled/faded dot that updates as playback passes each one ---- */
+  .event-log-head{font-size:12.5px;font-weight:700;color:var(--text);margin:22px 0 4px;}
+  .event-log{border:1px solid var(--border);border-radius:var(--radius-sm);background:#FCFCFD;padding:2px 14px;}
+  .event-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;padding:9px 0;border-bottom:1px solid var(--border);}
+  .event-row:last-child{border-bottom:none;}
+  .event-row-label{flex:0 0 118px;font-size:12.5px;font-weight:700;color:var(--text);}
+  .event-row-marks{display:flex;flex-wrap:wrap;gap:16px;}
+  .event-mark{display:flex;align-items:center;gap:6px;color:var(--text-faint);transition:color .15s ease;}
+  .event-mark-text{font-size:12px;font-variant-numeric:tabular-nums;}
+  .event-mark.passed{color:var(--text);}
+  .event-dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text-faint);background:transparent;transition:background .15s ease,border-color .15s ease;flex:0 0 auto;}
+  .event-mark.passed .event-dot{background:var(--blue);border-color:var(--blue);}
+
+  /* ---- plant layout (spatial view) ---- */
+  .view-toggle{display:flex;gap:4px;background:#E8EAEE;padding:4px;border-radius:10px;}
+  .view-toggle button{padding:7px 14px;border:none;border-radius:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);cursor:pointer;background:transparent;transition:all .12s ease;}
+  .view-toggle button.active{background:#fff;color:var(--blue-dark);box-shadow:var(--shadow);}
+
+  /* Same minmax(0,1fr) fix as .info-strip above — this is the one that
+     actually explained the "zoom" bug: a plain 1fr grid track can't
+     shrink below its content's min-content width. With 6 columns of
+     labeled inputs, that floor was wide enough that once the panel
+     narrowed past it (which happens sooner the more you zoom the page
+     in, since zoom shrinks the effective layout width), the WHOLE panel
+     — diagrams included, since they're width:100% of it — got pinned at
+     that width and pushed off-screen, needing a page-level horizontal
+     scroll to reach. That's why the drawings looked like they "moved"
+     instead of resizing: they were sized correctly relative to a panel
+     that itself had stopped shrinking, while the sidebar (no such grid)
+     kept reflowing normally. */
+  .plant-controls{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px 12px;margin-bottom:16px;padding:14px 16px;background:#FCFCFD;border:1px solid var(--border);border-radius:var(--radius-sm);}
+  .plant-controls .field{margin-bottom:0;}
+  .plant-controls .field label{font-size:10.5px;}
+  .plant-controls .field input{padding:6px 8px;font-size:12.5px;}
+  .plant-controls .hint{grid-column:1/-1;margin-top:2px;}
+
+  .plant-wrap{overflow-x:auto;background:#FCFCFD;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;}
+  /* Same fix as #trackSvg above: no min-width, so this scales continuously
+     with its container / with page zoom instead of clipping + scrolling. */
+  #plantSvg{display:block;width:100%;height:auto;}
+
+  .plant-legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:11.5px;color:var(--text-muted);}
+  .plant-legend .item{display:flex;align-items:center;gap:6px;}
+  .plant-legend .swatch{width:14px;height:14px;border-radius:3px;border:1.5px solid var(--text-faint);flex:0 0 auto;}
+  .plant-legend .swatch.trigger{border-color:var(--amber);}
+  .plant-legend .swatch.frozen{background:#FDF3E7;border-color:var(--amber);}
+  .plant-legend .swatch.rush{background:#FEE2E2;border-color:#DC2626;}
+  .plant-legend .line.loop{width:20px;height:0;border-top:1.75px dashed var(--blue);}
+  .plant-legend .line.flow{width:20px;height:0;border-top:2px solid var(--text-faint);}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============================ SIDEBAR ============================ -->
+  <div class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M4 12h4M16 12h4"/></svg>
+      </div>
+      <div>
+        <h1>Movement Simulation</h1>
+        <p>Piece &amp; Kanban card tracking</p>
+      </div>
+    </div>
+
+    <div class="status-row">
+      <span class="status-dot pending" id="statusDot"></span>
+      <span id="statusText">Checking API…</span>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Connection</h2></div>
+      <div class="card-body">
+        <div class="field">
+          <label>API Base URL</label>
+          <input type="text" id="apiBaseInput" value="http://localhost:8000" />
+          <div class="hint">Must match the main dashboard's API base — this page reads the LAST run cached there, it never re-simulates.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Simulation mode</h2></div>
+      <div class="card-body">
+        <div class="mode-row">
+          <button class="mode-btn active" id="modeBtnPush" onclick="setMode('push')">Push</button>
+          <button class="mode-btn" id="modeBtnKanban" onclick="setMode('kanban')">Pull (Kanban)</button>
+          <button class="mode-btn" id="modeBtnAll" onclick="setMode('all')">All Production</button>
+        </div>
+
+        <div class="field" id="entityTypeField" style="display:none;">
+          <label>Track</label>
+          <select id="entityTypeSelect" onchange="onEntityTypeChange()">
+            <option value="piece">Piece</option>
+            <option value="card">Kanban card</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Line</label>
+          <select id="lineSelect"><option value="">All lines</option></select>
+        </div>
+
+        <!-- Push-only: which day of the cached multi-day run -->
+        <div class="field" id="pushDayField">
+          <label>Day</label>
+          <input type="number" id="pushDayInput" value="1" min="1" />
+          <div class="hint">Day 1 is the first day of the cached multi-day run.</div>
+        </div>
+
+        <!-- Push-only, pieces: which time range of that day -->
+        <div class="field" id="pushHourField">
+          <label>Time range</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="time" id="pushHourFromInput" value="06:00" />
+            <span style="color:var(--text-faint);">&ndash;</span>
+            <input type="time" id="pushHourToInput" value="10:00" />
+          </div>
+          <div class="hint">Required — narrows to pieces created in that window, otherwise there are too many to list. Wall-clock time of day, not simulation time.</div>
+        </div>
+
+        <!-- Kanban-only, pieces: which day of the cached MIXED run.
+             (Calendar dates aren't available here -- the mixed run is one
+             continuous clock, not a per-day-dated push/kanban table -- so
+             this still resolves internally to a 0-indexed day_index.) -->
+        <div class="field" id="kanbanPieceDayField" style="display:none;">
+          <label>Day</label>
+          <input type="number" id="kanbanDayInput" value="1" min="1" />
+          <div class="hint">Required — results can't be listed for the whole run at once (too much payload). Day 1 is the first day of the cached mixed run.</div>
+        </div>
+
+        <!-- Kanban-only, pieces: which time range of that day -->
+        <div class="field" id="kanbanHourField" style="display:none;">
+          <label>Time range</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="time" id="kanbanHourFromInput" value="06:00" />
+            <span style="color:var(--text-faint);">&ndash;</span>
+            <input type="time" id="kanbanHourToInput" value="10:00" />
+          </div>
+          <div class="hint">Required — narrows to pieces created in that window, otherwise there are too many to list. Wall-clock time of day, not simulation time.</div>
+        </div>
+
+        <!-- Kanban-only, cards: a day RANGE, so a card's movement can be
+             watched across more than one day at a time. -->
+        <div class="field" id="kanbanCardDayField" style="display:none;">
+          <label>Day range</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="number" id="kanbanCardDayFromInput" value="1" min="1" />
+            <span style="color:var(--text-faint);">&ndash;</span>
+            <input type="number" id="kanbanCardDayToInput" value="1" min="1" />
+          </div>
+          <div class="hint">Required. Day 1 is the first day of the cached mixed run. Use a wider range (e.g. 1–3) to watch a card's movement span multiple days.</div>
+        </div>
+
+        <button class="btn btn-primary" id="loadBtn" onclick="loadEntities()">
+          <span id="loadBtnLabel">Load</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="card" id="pickerCard" style="display:none;">
+      <div class="card-head"><h2 id="pickerHeading">Select a piece</h2></div>
+      <div class="card-body">
+        <div class="field" id="productTypeFilterField" style="display:none;">
+          <label>Product type</label>
+          <select id="productTypeFilter" onchange="applyProductTypeFilter()"></select>
+          <div class="hint">Narrows the list below to one product type.</div>
+        </div>
+        <div class="field">
+          <label id="pickerLabel">Piece ID</label>
+          <select id="entityPicker" onchange="onEntitySelected()"></select>
+          <div class="hint" id="pickerHint"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="errorSlot"></div>
+  </div>
+
+  <!-- ============================ MAIN ============================ -->
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="mainTitle">Movement Simulation</h1>
+        <p id="mainSubtitle">Load a run from the sidebar, then pick a piece or card to watch it move.</p>
+      </div>
+      <a href="mixed_production_planner_dashboard.html" target="_blank" rel="noopener">&larr; Back to main dashboard</a>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2><span id="panelTitle">Station track</span><span id="panelProductClassBadge" class="product-class-badge" style="display:none;"><span class="badge-key">Product Class</span><span id="panelProductClassValue"></span></span></h2>
+          <p id="panelSubtitle">Nothing loaded yet.</p>
+        </div>
+      </div>
+
+      <div id="emptyState" class="empty-state">
+        <div class="icon">&#8618;</div>
+        <h3>No entity selected</h3>
+        <p>Run the main dashboard's simulation first (this page reads its cached result), then load a piece or card here to animate its movement.</p>
+      </div>
+
+      <div id="playerArea" style="display:none;">
+        <div class="track-wrap">
+          <svg id="trackSvg"></svg>
+        </div>
+
+        <div class="player-controls">
+          <button class="btn btn-primary play-btn" id="playBtn">&#9654; Play</button>
+          <input type="range" id="scrubSlider" value="0" />
+          <span class="time-label" id="timeLabel">0.000 h</span>
+          <select id="speedSelect">
+            <option value="0.05">0.05x</option>
+            <option value="0.1">0.1x</option>
+            <option value="0.25">0.25x</option>
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+          <div class="goto-time">
+            <label for="timeInput">Go to</label>
+            <input type="text" id="timeInput" placeholder="Day 1, 08:15:00" />
+          </div>
+        </div>
+
+        <div class="info-strip">
+          <div class="info-card"><div class="label">Entity</div><div class="value" id="infoEntity">—</div></div>
+          <div class="info-card"><div class="label">Product</div><div class="value" id="infoProduct">—</div></div>
+          <div class="info-card"><div class="label">Current location</div><div class="value" id="infoLocation">—</div></div>
+          <div class="info-card"><div class="label">Status</div><div class="value" id="infoStatus">—</div></div>
+        </div>
+
+        <div class="event-log-head">Station timestamps</div>
+        <div class="event-log" id="eventLog"></div>
+      </div>
+
+      <!-- ==================== PLANT LAYOUT (spatial view) ====================
+           Step 3: real per-line structure (GET /api/mixed/plant_structure)
+           with real card occupancy animated across a day/hour window (GET
+           /api/mixed/movement_state). Requires a SPECIFIC line (not "All
+           lines") since the diagram is one line's physical Kanban loop. -->
+      <div id="plantLayoutArea" style="display:none;">
+        <div class="plant-controls">
+          <div class="field">
+            <label>Day</label>
+            <input type="number" id="plantDayInput" value="1" min="1" onchange="onPlantWindowChanged()" />
+          </div>
+          <div class="field">
+            <label>Hour (optional)</label>
+            <input type="number" id="plantHourInput" min="0" max="23" placeholder="whole day" onchange="onPlantWindowChanged()" />
+          </div>
+          <div class="field">
+            <label>Interval (min)</label>
+            <input type="number" id="plantIntervalInput" value="5" min="1" max="120" step="1" onchange="onPlantWindowChanged()" />
+            <div class="hint" style="margin-top:2px;">One snapshot every N real-world minutes.</div>
+          </div>
+          <div class="field" style="grid-column:span 2;">
+            <label>&nbsp;</label>
+            <button class="btn btn-primary" id="plantLoadBtn" onclick="loadPlantMovement()" style="width:100%;">
+              <span id="plantLoadBtnLabel">Load plant movement</span>
+            </button>
+          </div>
+          <div class="hint" id="plantHint">Pick a specific line in the sidebar, then load a day (or one hour of it) to animate real card movement through this line's Supermarket, Batch Collector and Chute.</div>
+        </div>
+
+        <div class="plant-wrap">
+          <svg id="plantSvg"></svg>
+        </div>
+
+        <div class="player-controls" id="plantPlayerControls" style="display:none;">
+          <button class="btn btn-primary play-btn" id="plantPlayBtn">&#9654; Play</button>
+          <input type="range" id="plantScrubSlider" value="0" />
+          <span class="time-label" id="plantTimeLabel">0.000 h</span>
+          <select id="plantSpeedSelect">
+            <option value="0.05">0.05x</option>
+            <option value="0.1">0.1x</option>
+            <option value="0.25">0.25x</option>
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+          <div class="goto-time">
+            <label for="plantTimeInput">Go to</label>
+            <input type="text" id="plantTimeInput" placeholder="Day 1, 08:15:00" />
+          </div>
+        </div>
+
+        <div class="plant-legend" id="plantProductLegend"></div>
+
+        <div class="plant-legend">
+          <div class="item"><span class="swatch trigger"></span> Below trigger amount</div>
+          <div class="item"><span class="swatch frozen"></span> Frozen zone</div>
+          <div class="item"><span class="swatch rush"></span> Rush (jumped the queue)</div>
+          <div class="item"><span class="line flow"></span> Forward flow</div>
+          <div class="item"><span class="line loop"></span> Card withdrawn (loop back)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="movement_layout.js"></script>
+<script>
+/* =========================================================================
+   Pre-fill from the main dashboard's "Open Movement Simulation" link,
+   e.g. movement_simulation.html?api_base=http://localhost:8000&line_id=2
+   &day_index=3&mode=push  -- all params optional, applied where present.
+   ========================================================================= */
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('api_base')) {
+  document.getElementById('apiBaseInput').value = urlParams.get('api_base');
+}
+if (urlParams.get('day_index') !== null) {
+  // day_index arrives 0-indexed from the main dashboard's link; the UI
+  // here is 1-indexed (Day 1 = first day), so shift it on the way in.
+  const prefilledDay = (parseInt(urlParams.get('day_index'), 10) || 0) + 1;
+  document.getElementById('pushDayInput').value = prefilledDay;
+  document.getElementById('kanbanDayInput').value = prefilledDay;
+  document.getElementById('kanbanCardDayFromInput').value = prefilledDay;
+  document.getElementById('kanbanCardDayToInput').value = prefilledDay;
+}
+
+/* =========================================================================
+   State
+   ========================================================================= */
+let API_BASE = document.getElementById('apiBaseInput').value.replace(/\/+$/, '');
+let mode = 'push';           // 'push' | 'kanban'  -> cls='push' | 'pull' filter on the ONE cached mixed run
+let entityType = 'piece';    // 'piece' | 'card'  (card only valid in kanban mode)
+let lastPartTrace = null;    // full /api/mixed/part_trace response for the loaded line/day(s), merged across the requested hour range
+let lastLoadedCards = [];    // raw card summaries ({card_id, product_type, line_id}) merged across the requested day range
+let lastCardEntry = null;    // one card's {card_id, product_type, line_id, transitions} from card_trace, merged across the requested day range
+let player = null;
+let trackInfo = null;        // {positions, marker, width, height} from renderStationTrack
+let currentSegments = null;
+let dayStartHour = 0;        // from the loaded trace's day_start_hour — for clock-of-day display
+let cardDayRange = null;     // {from, to} 0-indexed day_index bounds used for the currently-loaded cards
+
+// Display labels for the fixed push/pull station track — "Inspect" is
+// the backend's internal field name (movement_trace._STATION_FIELDS);
+// the shop floor calls this station "Sichtprüfung". MovementLayout
+// translates part station segments through the same mapping so the
+// labels used for track positions and for segment lookups match.
+// NOTE: there is no longer a single fixed station list here -- parts can
+// route through 2 optional stations (Stift Einpressen, Lochfilter
+// Pruefen) in addition to the 4 every part visits, so each piece's
+// station track is built from ITS OWN segments in renderPiece() below.
+
+// ---- day / time helpers -----------------------------------------------
+// UI shows 1-indexed days ("Day 1" = first day); the backend's
+// day_index query param is 0-indexed. Convert right at the API-call
+// boundary so every internal value stays 0-indexed like the backend.
+function dayInputToIndex(v) {
+  const n = parseInt(v, 10);
+  if (isNaN(n) || n < 1) return null;
+  return n - 1;
+}
+
+// Time-range inputs are wall-clock/datetime ("06:00"), not raw
+// simulation time. The backend's `hour` filter buckets pieces by raw
+// sim-clock hour (0-23 past day start), the same value formatClock()
+// adds day_start_hour to before formatting — so undo that offset here
+// to turn a wall-clock hour back into the sim-hour bucket to request.
+function wallTimeToSimHour(timeStr) {
+  if (!timeStr) return null;
+  const hh = parseInt(timeStr.split(':')[0], 10);
+  if (isNaN(hh)) return null;
+  const dsh = dayStartHour || 0;
+  return ((hh - dsh) % 24 + 24) % 24;
+}
+function timeStrToSecondsOfDay(timeStr) {
+  if (!timeStr) return null;
+  const [hh, mm] = timeStr.split(':').map(Number);
+  return (hh || 0) * 3600 + (mm || 0) * 60;
+}
+// Inclusive list of raw sim-hour buckets to request, walking forward
+// from `fromStr` to `toStr` (wraps past midnight if `to` < `from`).
+function simHourRange(fromStr, toStr) {
+  const fromH = wallTimeToSimHour(fromStr);
+  const toH = wallTimeToSimHour(toStr);
+  if (fromH == null || toH == null) return [];
+  const hours = [];
+  let h = fromH;
+  for (let i = 0; i < 24; i++) {
+    hours.push(h);
+    if (h === toH) break;
+    h = (h + 1) % 24;
+  }
+  return hours;
+}
+// Final precise trim within the requested wall-clock window (hour
+// buckets alone are too coarse for e.g. "06:00–06:30").
+function filterPartsByTimeRange(parts, fromStr, toStr) {
+  const fromSec = timeStrToSecondsOfDay(fromStr);
+  const toSec = timeStrToSecondsOfDay(toStr);
+  if (fromSec == null || toSec == null) return parts;
+  const dsh = dayStartHour || 0;
+  return parts.filter((p) => {
+    let total = Math.floor(p.t_created + dsh * 3600);
+    total = ((total % 86400) + 86400) % 86400;
+    if (fromSec <= toSec) return total >= fromSec && total < toSec;
+    return total >= fromSec || total < toSec; // window wraps past midnight
+  });
+}
+
+document.getElementById('apiBaseInput').addEventListener('change', (e) => {
+  API_BASE = e.target.value.replace(/\/+$/, '');
+  checkHealth();
+});
+
+// A different line invalidates any loaded plant movement (it's drawn +
+// animated per line) — don't keep showing stale cards for the old line.
+document.getElementById('lineSelect').addEventListener('change', () => {
+  if (String(plantLineId) !== String(document.getElementById('lineSelect').value)) {
+    if (plantPlayer) { plantPlayer.stop(); plantPlayer = null; }
+    plantFrames = null;
+    plantLayoutInfo = null;
+    document.getElementById('plantPlayerControls').style.display = 'none';
+    document.getElementById('plantProductLegend').innerHTML = '';
+    if (mode === 'all') renderPlantStaticOnly();
+  }
+});
+
+function escapeHtml(s) { return MovementLayout.escapeHtml(s); }
+
+function showError(msg) {
+  document.getElementById('errorSlot').innerHTML =
+    `<div class="error-banner"><b>Request failed.</b><br>${escapeHtml(msg)}</div>`;
+}
+function clearError() { document.getElementById('errorSlot').innerHTML = ''; }
+
+function setStatus(state, text) {
+  document.getElementById('statusDot').className = 'status-dot ' + state;
+  document.getElementById('statusText').innerText = text;
+}
+
+async function checkHealth() {
+  setStatus('pending', 'Connecting to API…');
+  try {
+    const res = await fetch(`${API_BASE}/api/health`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    setStatus('ok', `Connected · lines: ${data.lines.join(', ')}`);
+    const sel = document.getElementById('lineSelect');
+    sel.innerHTML = '<option value="">All lines</option>' +
+      data.lines.map((l, i) => `<option value="${i + 1}">${escapeHtml(l)}</option>`).join('');
+    if (urlParams.get('line_id')) sel.value = urlParams.get('line_id');
+  } catch (e) {
+    setStatus('bad', 'API unreachable — check base URL / CORS / server');
+  }
+}
+checkHealth();
+if (urlParams.get('mode') === 'kanban' || urlParams.get('mode') === 'push') {
+  setMode(urlParams.get('mode'));
+}
+
+/* =========================================================================
+   Mode / entity-type switching
+
+   Three modes now: 'push' and 'kanban' each show ONLY the Station Track
+   view (per-piece/per-card animation) with their own entity picker;
+   'all' shows ONLY the single combined Plant Layout (Supermarket rows +
+   Chute with BOTH push and pull traffic — see loadPlantMovement's
+   include_push wiring), no piece/card picker at all. There is no longer
+   a manual Station-Track/Plant-Layout toggle inside Push or Kanban —
+   the Plant Layout lives in exactly one place now: the All Production
+   tab.
+   ========================================================================= */
+function setMode(m) {
+  if (m === mode) return;
+  mode = m;
+  document.getElementById('modeBtnPush').classList.toggle('active', m === 'push');
+  document.getElementById('modeBtnKanban').classList.toggle('active', m === 'kanban');
+  document.getElementById('modeBtnAll').classList.toggle('active', m === 'all');
+
+  const isAll = m === 'all';
+  document.getElementById('entityTypeField').style.display = (m === 'kanban') ? '' : 'none';
+  document.getElementById('pushDayField').style.display = (m === 'push') ? '' : 'none';
+  document.getElementById('pushHourField').style.display = (m === 'push') ? '' : 'none';
+  document.getElementById('loadBtn').style.display = isAll ? 'none' : '';
+  document.getElementById('pickerCard').style.display = 'none';
+
+  if (m === 'push') { entityType = 'piece'; document.getElementById('entityTypeSelect').value = 'piece'; }
+  if (!isAll) onEntityTypeChange(); // also calls resetPlayerArea()
+  else resetPlayerArea();
+
+  if (isAll) showAllProductionView();
+}
+
+function onEntityTypeChange() {
+  entityType = document.getElementById('entityTypeSelect').value;
+  // Kanban needs a day (or day range, for cards) for both pieces and
+  // cards -- whole-run loads are too large -- pieces additionally need
+  // a time range to narrow further. Cards get a day RANGE so a card's
+  // movement can be watched spanning more than one day.
+  const isPiece = mode === 'kanban' && entityType === 'piece';
+  const isCard = mode === 'kanban' && entityType === 'card';
+  document.getElementById('kanbanPieceDayField').style.display = isPiece ? '' : 'none';
+  document.getElementById('kanbanHourField').style.display = isPiece ? '' : 'none';
+  document.getElementById('kanbanCardDayField').style.display = isCard ? '' : 'none';
+  document.getElementById('pickerCard').style.display = 'none';
+  resetPlayerArea();
+}
+
+function resetPlayerArea() {
+  if (player) { player.stop(); player = null; }
+  document.getElementById('playerArea').style.display = 'none';
+  document.getElementById('plantLayoutArea').style.display = 'none';
+  document.getElementById('emptyState').style.display = mode === 'all' ? 'none' : '';
+  document.getElementById('panelTitle').textContent = 'Station track';
+  document.getElementById('panelSubtitle').textContent = 'Nothing loaded yet.';
+  document.getElementById('eventLog').innerHTML = '';
+  document.getElementById('productTypeFilterField').style.display = 'none';
+  document.getElementById('panelProductClassBadge').style.display = 'none';
+}
+
+// Shows the single combined Plant Layout (All Production tab). Draws the
+// real static shape as soon as a line is selected (Exotic rows included
+// this time — see buildPlantConfigFromStructure's includeExotic option),
+// even before "Load plant movement" has fetched any card/push occupancy.
+function showAllProductionView() {
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('playerArea').style.display = 'none';
+  document.getElementById('plantLayoutArea').style.display = '';
+  document.getElementById('panelTitle').textContent = 'Plant layout — All Production';
+  document.getElementById('panelSubtitle').textContent = 'Combined push + pull movement for one line.';
+  if (plantFrames && String(plantLineId) === String(document.getElementById('lineSelect').value)) {
+    renderPlantFrameAt(parseFloat(document.getElementById('plantScrubSlider').value));
+  } else {
+    renderPlantStaticOnly();
+  }
+}
+
+/* =========================================================================
+   Loading entities (populates the picker)
+   ========================================================================= */
+async function loadEntities() {
+  clearError();
+  const btn = document.getElementById('loadBtn');
+  const label = document.getElementById('loadBtnLabel');
+  btn.disabled = true;
+  label.innerHTML = '<span class="spinner"></span> Loading…';
+
+  try {
+    if (mode === 'push' || (mode === 'kanban' && entityType === 'piece')) {
+      await loadPieces();
+    } else {
+      await loadCards();
+    }
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    label.textContent = 'Load';
+  }
+}
+
+async function loadPieces() {
+  const lineId = document.getElementById('lineSelect').value;
+
+  let dayVal, fromTime, toTime;
+  if (mode === 'push') {
+    dayVal = document.getElementById('pushDayInput').value;
+    fromTime = document.getElementById('pushHourFromInput').value;
+    toTime = document.getElementById('pushHourToInput').value;
+  } else {
+    dayVal = document.getElementById('kanbanDayInput').value;
+    fromTime = document.getElementById('kanbanHourFromInput').value;
+    toTime = document.getElementById('kanbanHourToInput').value;
+  }
+  if (!dayVal) throw new Error('Enter a day.');
+  if (!fromTime || !toTime) throw new Error('Enter a time range — otherwise there are too many pieces to list.');
+
+  const dayIndex = dayInputToIndex(dayVal);
+  if (dayIndex == null) throw new Error('Day must be 1 or greater.');
+
+  // 'push'/'kanban' page-mode maps to a cls=push|pull filter on the ONE
+  // cached mixed run (see api_server_mixed.py's /api/mixed/* endpoints) --
+  // there's no separate push-only / kanban-only server to switch between.
+  // NOTE: the backend's cls labels are the opposite of the page's tabs --
+  // pieces actually produced by the push line come back under cls='pull'
+  // and vice versa -- so that swap is corrected here rather than in the
+  // tab labels the person sees.
+  const cls = mode === 'push' ? 'pull' : 'push';
+
+  const hours = simHourRange(fromTime, toTime);
+  if (!hours.length) throw new Error('Invalid time range.');
+
+  const byId = new Map();
+  let timeUnit = 's';
+  for (const hour of hours) {
+    const params = new URLSearchParams({ time_unit: 's', day_index: dayIndex, hour, cls });
+    if (lineId) params.set('line_id', lineId);
+    const res = await fetch(`${API_BASE}/api/mixed/part_trace?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    dayStartHour = data.day_start_hour != null ? data.day_start_hour : dayStartHour;
+    timeUnit = data.time_unit || timeUnit;
+    (data.parts || []).forEach((p) => byId.set(p.part_id, p));
+  }
+
+  let parts = Array.from(byId.values());
+  parts = filterPartsByTimeRange(parts, fromTime, toTime);
+  parts.sort((a, b) => a.part_id - b.part_id);
+
+  lastPartTrace = { time_unit: timeUnit, parts };
+  populateProductTypeFilter(parts);
+  renderPiecePicker(parts);
+}
+
+async function loadCards() {
+  const lineId = document.getElementById('lineSelect').value;
+  const fromDayVal = document.getElementById('kanbanCardDayFromInput').value;
+  const toDayVal = document.getElementById('kanbanCardDayToInput').value;
+  if (!fromDayVal || !toDayVal) throw new Error('Enter a day range — card mode requires restricting to a day range.');
+
+  let fromIdx = dayInputToIndex(fromDayVal);
+  let toIdx = dayInputToIndex(toDayVal);
+  if (fromIdx == null || toIdx == null) throw new Error('Day must be 1 or greater.');
+  if (toIdx < fromIdx) { const tmp = fromIdx; fromIdx = toIdx; toIdx = tmp; }
+  cardDayRange = { from: fromIdx, to: toIdx };
+
+  // Cards can appear on more than one day of the range -- fetch each
+  // day's card list and union them so a card present on any day in the
+  // window shows up once in the picker.
+  const byId = new Map();
+  for (let idx = fromIdx; idx <= toIdx; idx++) {
+    const params = new URLSearchParams({ day_index: idx });
+    if (lineId) params.set('line_id', lineId);
+    const res = await fetch(`${API_BASE}/api/mixed/card_ids?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    (data.cards || []).forEach((c) => byId.set(c.card_id, c));
+  }
+
+  lastLoadedCards = Array.from(byId.values()).sort((a, b) => a.card_id - b.card_id);
+  populateProductTypeFilter(lastLoadedCards);
+  renderCardPicker(lastLoadedCards);
+}
+
+/* =========================================================================
+   Product-type filter — an extra "tab" narrowing whichever list (pieces
+   or cards) is currently loaded, without re-fetching anything.
+   ========================================================================= */
+function populateProductTypeFilter(items) {
+  const sel = document.getElementById('productTypeFilter');
+  const types = Array.from(new Set(items.map((i) => i.product_type).filter(Boolean))).sort();
+  sel.innerHTML = '<option value="">All product types</option>' +
+    types.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+  sel.value = '';
+  document.getElementById('productTypeFilterField').style.display = types.length ? '' : 'none';
+}
+
+function applyProductTypeFilter() {
+  if (mode === 'push' || (mode === 'kanban' && entityType === 'piece')) {
+    renderPiecePicker(lastPartTrace ? (lastPartTrace.parts || []) : []);
+  } else {
+    renderCardPicker(lastLoadedCards);
+  }
+}
+
+function renderPiecePicker(parts) {
+  const filterVal = document.getElementById('productTypeFilter').value;
+  const filtered = filterVal ? parts.filter((p) => p.product_type === filterVal) : parts;
+  const picker = document.getElementById('entityPicker');
+  if (!filtered.length) {
+    picker.innerHTML = '<option value="">No pieces found for this selection</option>';
+  } else {
+    picker.innerHTML = filtered.map((p) =>
+      `<option value="${p.part_id}">#${p.part_id} · ${escapeHtml(p.product_type)} · ${escapeHtml(p.status)}</option>`
+    ).join('');
+  }
+  document.getElementById('pickerHeading').textContent = 'Select a piece';
+  document.getElementById('pickerLabel').textContent = 'Piece ID';
+  document.getElementById('pickerHint').textContent = `${filtered.length} of ${parts.length} piece(s) shown.`;
+  document.getElementById('pickerCard').style.display = '';
+  if (filtered.length) onEntitySelected(); else resetPlayerArea();
+}
+
+function renderCardPicker(cards) {
+  const filterVal = document.getElementById('productTypeFilter').value;
+  const filtered = filterVal ? cards.filter((c) => c.product_type === filterVal) : cards;
+  const picker = document.getElementById('entityPicker');
+  if (!filtered.length) {
+    picker.innerHTML = '<option value="">No cards found for this selection</option>';
+  } else {
+    picker.innerHTML = filtered.map((c) =>
+      `<option value="${c.card_id}">#${c.card_id} · ${escapeHtml(c.product_type)}</option>`
+    ).join('');
+  }
+  document.getElementById('pickerHeading').textContent = 'Select a card';
+  document.getElementById('pickerLabel').textContent = 'Card ID';
+  const dayLabel = cardDayRange
+    ? (cardDayRange.from === cardDayRange.to ? `day ${cardDayRange.from + 1}` : `days ${cardDayRange.from + 1}\u2013${cardDayRange.to + 1}`)
+    : '';
+  document.getElementById('pickerHint').textContent = `${filtered.length} of ${cards.length} card(s) shown${dayLabel ? ' for ' + dayLabel : ''}.`;
+  document.getElementById('pickerCard').style.display = '';
+  if (filtered.length) onEntitySelected(); else resetPlayerArea();
+}
+
+/* =========================================================================
+   Selecting one entity -> fetch its trace (cards only; pieces are
+   already fully loaded) -> render track + wire playback
+   ========================================================================= */
+async function onEntitySelected() {
+  clearError();
+  const picker = document.getElementById('entityPicker');
+  const id = picker.value;
+  if (!id) { resetPlayerArea(); return; }
+
+  try {
+    if (mode === 'push' || (mode === 'kanban' && entityType === 'piece')) {
+      const part = (lastPartTrace.parts || []).find(p => String(p.part_id) === String(id));
+      if (!part) throw new Error('Piece not found in the loaded set.');
+      renderPiece(part, lastPartTrace.time_unit);
+    } else {
+      const lineId = document.getElementById('lineSelect').value;
+      if (!cardDayRange) throw new Error('Load cards first.');
+
+      // The card's timespan may cross more than one day of the selected
+      // range -- fetch each day separately (the mixed run's sim clock is
+      // continuous, so raw timestamps line up across days with no
+      // re-basing needed) and merge the transitions into one trace.
+      const mergedTransitions = [];
+      let timeUnit = 's';
+      let cardMeta = null;
+      for (let idx = cardDayRange.from; idx <= cardDayRange.to; idx++) {
+        const params = new URLSearchParams({ card_id: id, time_unit: 's', day_index: idx });
+        if (lineId) params.set('line_id', lineId);
+        const res = await fetch(`${API_BASE}/api/mixed/card_trace?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        dayStartHour = data.day_start_hour != null ? data.day_start_hour : dayStartHour;
+        timeUnit = data.time_unit || timeUnit;
+        const card = (data.cards || [])[0];
+        if (card) {
+          cardMeta = cardMeta || card;
+          mergedTransitions.push(...card.transitions);
+        }
+      }
+      if (!cardMeta) throw new Error('Card has no recorded activity in this day range.');
+
+      mergedTransitions.sort((a, b) => a.t - b.t);
+      const transitions = [];
+      mergedTransitions.forEach((tr) => {
+        const prev = transitions[transitions.length - 1];
+        if (prev && prev.state === tr.state && prev.t === tr.t) return; // day-boundary duplicate
+        transitions.push(tr);
+      });
+
+      const card = Object.assign({}, cardMeta, { transitions });
+      lastCardEntry = card;
+      renderCard(card, timeUnit);
+    }
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+/* =========================================================================
+   Rendering: piece
+   ========================================================================= */
+function renderPiece(part, timeUnit) {
+  const segments = MovementLayout.partToSegments(part);
+  if (!segments.length) {
+    showError(`Piece #${part.part_id} has no recorded station timestamps (likely scrapped very early).`);
+    resetPlayerArea();
+    return;
+  }
+  currentSegments = segments;
+
+  // Station track is built from THIS part's own segments, in the order
+  // the backend returned them (Beladen, [Stift Einpressen], [Lochfilter
+  // Pruefen], Supfina, Waschen, Sichtprüfung) -- optional stations only
+  // appear here when this part actually visited them, so different
+  // parts can show a different-length track.
+  const stationLabels = segments.map((seg) => seg.label);
+  trackInfo = MovementLayout.renderStationTrack(document.getElementById('trackSvg'), stationLabels);
+
+  const tMin = segments[0].enter_t;
+  const lastStationEnd = segments[segments.length - 1].exit_t;
+  // Extend a few seconds past the last station (t_sichtpruefung_end, or
+  // t_exit if later) so the piece visibly arrives and settles instead
+  // of playback cutting off exactly when it reaches the final station.
+  const tMax = (part.t_exit != null ? Math.max(part.t_exit, lastStationEnd) : lastStationEnd)
+    + MovementLayout.trackEndPadding(timeUnit);
+
+  document.getElementById('panelTitle').textContent = `Piece #${part.part_id}`;
+  const badgeEl = document.getElementById('panelProductClassBadge');
+  if (part.product_class != null && part.product_class !== '') {
+    document.getElementById('panelProductClassValue').textContent = part.product_class;
+    badgeEl.style.display = '';
+  } else {
+    badgeEl.style.display = 'none';
+  }
+  document.getElementById('panelSubtitle').textContent =
+    `${part.product_type} · line ${part.line_id} · ${part.status}` + (part.rework_pass ? ` · reworked ${part.rework_pass}x` : '');
+  document.getElementById('infoEntity').textContent = `#${part.part_id}`;
+  document.getElementById('infoProduct').textContent = part.product_type;
+  document.getElementById('infoStatus').textContent = part.status;
+
+  const eventRows = segments.map((seg) => ({
+    label: seg.label,
+    marks: [
+      { dotLabel: 'start', t: seg.enter_t, timeText: MovementLayout.formatClock(seg.enter_t, dayStartHour) },
+      { dotLabel: 'end', t: seg.exit_t, timeText: MovementLayout.formatClock(seg.exit_t, dayStartHour) },
+    ],
+  }));
+  MovementLayout.renderEventLog(document.getElementById('eventLog'), eventRows);
+
+  startPlayer(tMin, tMax, timeUnit, (t) => {
+    const pos = MovementLayout.positionAtTime(segments, trackInfo.positions, t);
+    updateMarker(pos);
+    MovementLayout.updateEventLogDots(document.getElementById('eventLog'), t);
+  });
+}
+
+/* =========================================================================
+   Rendering: card
+   ========================================================================= */
+function renderCard(card, timeUnit) {
+  // endT: extend the final segment a few seconds past the last recorded
+  // transition (rather than ending exactly on it) so playback visibly
+  // settles at the card's final state instead of cutting off the
+  // instant it arrives there.
+  const dayLabel = cardDayRange
+    ? (cardDayRange.from === cardDayRange.to ? `day ${cardDayRange.from + 1}` : `days ${cardDayRange.from + 1}\u2013${cardDayRange.to + 1}`)
+    : '';
+  const lastT = card.transitions.length ? card.transitions[card.transitions.length - 1].t : 0;
+  const endT = lastT + MovementLayout.trackEndPadding(timeUnit);
+  const segments = MovementLayout.cardToSegments(card, endT);
+  if (!segments.length) {
+    showError(`Card #${card.card_id} has no recorded transitions for this day.`);
+    resetPlayerArea();
+    return;
+  }
+  currentSegments = segments;
+
+  const stationOrder = MovementLayout.cardStationOrder(segments);
+  const displayLabels = stationOrder.map(MovementLayout.cardStateLabel);
+  trackInfo = MovementLayout.renderStationTrack(document.getElementById('trackSvg'), displayLabels);
+  // positions are keyed by DISPLAY label; segments use RAW state — bridge them.
+  const positionsByRawState = {};
+  stationOrder.forEach((raw, i) => { positionsByRawState[raw] = trackInfo.positions[displayLabels[i]]; });
+
+  const tMin = segments[0].enter_t;
+  const tMax = segments[segments.length - 1].exit_t;
+
+  document.getElementById('panelTitle').textContent = `Kanban card #${card.card_id}`;
+  document.getElementById('panelProductClassBadge').style.display = 'none'; // cards have no product_class
+  document.getElementById('panelSubtitle').textContent =
+    `${card.product_type} · line ${card.line_id}` + (dayLabel ? ` · ${dayLabel}` : '');
+  document.getElementById('infoEntity').textContent = `#${card.card_id}`;
+  document.getElementById('infoProduct').textContent = card.product_type;
+  document.getElementById('infoStatus').textContent = '—';
+
+  const eventRows = card.transitions.map((tr) => ({
+    label: MovementLayout.cardStateLabel(tr.state),
+    marks: [
+      // Card timespans can cross more than one day, so station
+      // timestamps show the date (as "Day N") alongside the time.
+      { dotLabel: null, t: tr.t, timeText: MovementLayout.formatDateTime(tr.t, dayStartHour) },
+    ],
+  }));
+  MovementLayout.renderEventLog(document.getElementById('eventLog'), eventRows);
+
+  startPlayer(tMin, tMax, timeUnit, (t) => {
+    const pos = MovementLayout.positionAtTime(segments, positionsByRawState, t);
+    updateMarker(pos, MovementLayout.cardStateLabel);
+    MovementLayout.updateEventLogDots(document.getElementById('eventLog'), t);
+  });
+}
+
+/* =========================================================================
+   Shared: marker update + player wiring
+   ========================================================================= */
+function updateMarker(pos, labelFmt) {
+  if (!pos || !trackInfo) return;
+  trackInfo.marker.setAttribute('cx', pos.x);
+  trackInfo.marker.setAttribute('cy', pos.y);
+  trackInfo.marker.setAttribute('fill', pos.phase === 'transit' ? '#9CB8F5' : '#2563EB');
+  const label = labelFmt ? pos.label.split(' \u2192 ').map(labelFmt).join(' \u2192 ') : pos.label;
+  document.getElementById('infoLocation').textContent = label;
+}
+
+function startPlayer(tMin, tMax, timeUnit, onTick) {
+  if (player) player.stop();
+  // Push/Kanban modes only ever show the station track now — no toggle
+  // to set, just make sure the plant layout (All Production's view) is
+  // hidden and the track panel is shown. panelTitle was already set by
+  // the caller (Piece #X / Kanban card #X) — don't clobber it here.
+  document.getElementById('plantLayoutArea').style.display = 'none';
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('playerArea').style.display = '';
+
+  player = MovementLayout.createPlayer(
+    {
+      sliderEl: document.getElementById('scrubSlider'),
+      playBtnEl: document.getElementById('playBtn'),
+      speedEl: document.getElementById('speedSelect'),
+      timeLabelEl: document.getElementById('timeLabel'),
+      timeInputEl: document.getElementById('timeInput'),
+    },
+    {
+      tMin, tMax, unit: timeUnit, onTick, playSeconds: 20,
+      timeFormatter: (t) => MovementLayout.formatClock(t, dayStartHour),
+      // t here is already the trace's raw, day-stitched seconds (see
+      // formatClock's docstring) — the same domain formatDateTime /
+      // parseDateTimeInput both work in directly, no unit conversion.
+      timeInputFormatter: (t) => MovementLayout.formatDateTime(t, dayStartHour),
+      timeInputParser: (str) => MovementLayout.parseDateTimeInput(str, dayStartHour),
+    }
+  );
+}
+
+/* =========================================================================
+   Plant layout (spatial view) — Step 3: real per-line structure + real
+   card occupancy, animated across a requested day/hour window.
+
+     plantLayoutInfo  — renderPlantLayout()'s return value ({positions,
+                         width, height}) for the currently loaded line's
+                         static shape. Re-fetched only when the line
+                         selection changes (see loadPlantMovement()).
+     plantFrames      — the last /api/mixed/movement_state response's
+                         frames[] array: [{t, lines: [...]}], one entry
+                         per line per frame.
+     plantLineId      — the line_id these frames/that shape belong to,
+                         so a stale render is never shown after the line
+                         selector changes without reloading.
+     plantColorMap    — product_type -> color, built once per load from
+                         every product_type seen across the structure +
+                         frames, so a product's color never shifts
+                         mid-playback.
+     plantPlayer      — MovementLayout.createPlayer() instance driving
+                         the plant scrub/play controls (separate from the
+                         station-track `player`, since both views can
+                         have independently-loaded state).
+   ========================================================================= */
+let plantLayoutInfo = null;
+let plantFrames = null;
+let plantLineId = null;
+let plantColorMap = {};
+let plantPlayer = null;// Draws just the static shape (no cards yet) — used when a line hasn't
+// had its movement data loaded, so switching to the Plant Layout tab
+// never shows a blank SVG. Fetches the line's REAL structure (cheap —
+// see plant_structure's docstring) rather than a generic placeholder,
+// so the diagram is already accurate before "Load plant movement" adds
+// the card animation.
+async function renderPlantStaticOnly() {
+  const svg = document.getElementById('plantSvg');
+  if (!svg) return;
+  document.getElementById('plantPlayerControls').style.display = 'none';
+  const lineId = document.getElementById('lineSelect').value;
+  if (!lineId) {
+    svg.innerHTML = '';
+    svg.removeAttribute('viewBox');
+    document.getElementById('plantHint').textContent = 'Pick a specific line in the sidebar (not "All lines") to draw its plant layout.';
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/mixed/plant_structure?line_id=${encodeURIComponent(lineId)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    const lineStruct = (data.lines || [])[0];
+    if (!lineStruct) throw new Error('No plant structure returned for this line.');
+    MovementLayout.renderPlantLayout(svg, MovementLayout.buildPlantConfigFromStructure(lineStruct, { includeExotic: true }));
+    document.getElementById('plantHint').textContent = 'Load a day (or one hour of it) to animate real push + pull movement through this line.';
+  } catch (e) {
+    // No cached run yet, or the request failed — fall back to a generic
+    // placeholder shape so the tab never shows a blank SVG.
+    MovementLayout.renderPlantLayout(svg, MovementLayout.DEFAULT_PLANT_CONFIG);
+    document.getElementById('plantHint').textContent = `Couldn't load this line's real structure yet (${e.message}). Showing a placeholder shape — run the main dashboard's simulation first.`;
+  }
+}
+
+function onPlantWindowChanged() {
+  // Inputs changed after a load -- don't re-fetch automatically (movement_state
+  // re-scans the whole card registry per frame, see its docstring), just hint
+  // that the Load button needs pressing again.
+  if (plantFrames) document.getElementById('plantHint').textContent = 'Window changed — click "Load plant movement" to refresh.';
+}
+
+async function loadPlantMovement() {
+  clearError();
+  const lineId = document.getElementById('lineSelect').value;
+  if (!lineId) { showError('Pick a specific line in the sidebar first — the Plant Layout view is one line at a time.'); return; }
+
+  const dayVal = document.getElementById('plantDayInput').value;
+  const dayIndex = dayInputToIndex(dayVal);
+  if (dayIndex == null) { showError('Day must be 1 or greater.'); return; }
+  const hourVal = document.getElementById('plantHourInput').value;
+  const intervalMin = parseFloat(document.getElementById('plantIntervalInput').value) || 5;
+
+  const btn = document.getElementById('plantLoadBtn');
+  const label = document.getElementById('plantLoadBtnLabel');
+  btn.disabled = true;
+  label.innerHTML = '<span class="spinner"></span> Loading…';
+
+  try {
+    // A fresh load starts a clean slate for the Collection Box's
+    // card_id -> product_type fallback cache (see resetCardProductCache's
+    // docstring) — otherwise a card_id from a previous line/day could
+    // leak its old product's color into this run.
+    MovementLayout.resetCardProductCache();
+    // Static shape — cheap, re-fetched every load so a mid-run frozen-
+    // zone or trigger-amount change (PATCH /api/mixed/push_policy) is
+    // reflected immediately.
+    const structRes = await fetch(`${API_BASE}/api/mixed/plant_structure?line_id=${encodeURIComponent(lineId)}`);
+    const structData = await structRes.json();
+    if (!structRes.ok) throw new Error(structData.detail || `HTTP ${structRes.status}`);
+    const lineStruct = (structData.lines || [])[0];
+    if (!lineStruct) throw new Error('No plant structure returned for this line.');
+
+    const stateParams = new URLSearchParams({
+      line_id: lineId, day_index: dayIndex, interval_min: intervalMin, time_unit: 'h', include_push: 'true',
+    });
+    if (hourVal !== '') stateParams.set('hour', hourVal);
+    const stateRes = await fetch(`${API_BASE}/api/mixed/movement_state?${stateParams}`);
+    const stateData = await stateRes.json();
+    if (!stateRes.ok) throw new Error(stateData.detail || `HTTP ${stateRes.status}`);
+
+    dayStartHour = stateData.day_start_hour != null ? stateData.day_start_hour : dayStartHour;
+    MovementLayout.primeCardProductCache(stateData.frames);
+
+    const svg = document.getElementById('plantSvg');
+    plantLayoutInfo = MovementLayout.renderPlantLayout(svg, MovementLayout.buildPlantConfigFromStructure(lineStruct, { includeExotic: true }));
+    plantLineId = lineId;
+    plantFrames = stateData;
+
+    // Colors keyed by every product_type this line's Supermarket / Batch
+    // Collector rows can hold, sourced from the static structure (stable
+    // across the whole window) rather than re-derived per frame — PLUS
+    // every product actually seen occupying an Exotic row across the
+    // fetched frames (Exotic occupants aren't in the static structure at
+    // all — plant_structure reports sachnummer: null for Exotic rows,
+    // since which product sits there varies over time). Without this,
+    // every Exotic row fell back to the same unlabeled blue, which is
+    // exactly why two different products in two Exotic rows at the same
+    // instant were indistinguishable.
+    const pullProducts = (lineStruct.supermarket.rows || []).map(r => r.sachnummer)
+      .concat((lineStruct.batch_collector.rows || []).map(r => r.product_type))
+      .filter(Boolean);
+    const exoticProducts = new Set();
+    stateData.frames.forEach((f) => (f.lines || []).forEach((l) => (l.supermarket_rows || []).forEach((row) => {
+      if (row.is_exotic && row.sachnummer) exoticProducts.add(row.sachnummer);
+    })));
+    plantColorMap = MovementLayout.productColorMap(pullProducts.concat(Array.from(exoticProducts)));
+    renderPlantProductLegend(pullProducts, exoticProducts);
+
+    setupPlantPlayer();
+    document.getElementById('plantHint').textContent =
+      `Loaded ${stateData.frames.length} frame(s) for ${lineStruct.line_name}, day ${dayVal}${hourVal !== '' ? `, hour ${hourVal}` : ''}.`;
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    label.textContent = 'Load plant movement';
+  }
+}
+
+function renderPlantProductLegend(pullProducts, exoticProducts) {
+  const el = document.getElementById('plantProductLegend');
+  exoticProducts = exoticProducts || new Set();
+  const allProducts = Array.from(new Set(pullProducts.concat(Array.from(exoticProducts)).filter(Boolean))).sort();
+  el.innerHTML = allProducts.map((p) =>
+    `<div class="item"><span class="swatch" style="background:${plantColorMap[p]};border-color:${plantColorMap[p]};"></span> ${escapeHtml(p)}${exoticProducts.has(p) ? ' <em style="font-style:normal;color:var(--text-faint);">(exotic)</em>' : ''}</div>`
+  ).join('');
+}
+
+function setupPlantPlayer() {
+  if (plantPlayer) plantPlayer.stop();
+  document.getElementById('plantPlayerControls').style.display = '';
+  const frames = plantFrames.frames;
+  const tMin = frames[0].t, tMax = frames[frames.length - 1].t;
+  const toSec = plantFrames.time_unit === 'h' ? 3600 : plantFrames.time_unit === 'min' ? 60 : 1;
+  plantPlayer = MovementLayout.createPlayer(
+    {
+      sliderEl: document.getElementById('plantScrubSlider'),
+      playBtnEl: document.getElementById('plantPlayBtn'),
+      speedEl: document.getElementById('plantSpeedSelect'),
+      timeLabelEl: document.getElementById('plantTimeLabel'),
+      timeInputEl: document.getElementById('plantTimeInput'),
+    },
+    {
+      tMin, tMax, unit: plantFrames.time_unit || 'h', playSeconds: 20,
+      timeFormatter: (t) => MovementLayout.formatClock(t * toSec, dayStartHour),
+      // Same day-stitched raw-seconds domain as the track player's Go-to
+      // field, just converted through this trace's own unit (toSec) on
+      // the way in/out since plant frames' t isn't in seconds.
+      timeInputFormatter: (t) => MovementLayout.formatDateTime(t * toSec, dayStartHour),
+      timeInputParser: (str) => {
+        const secs = MovementLayout.parseDateTimeInput(str, dayStartHour);
+        return secs == null ? null : secs / toSec;
+      },
+      onTick: (t) => renderPlantFrameAt(t),
+    }
+  );
+}
+
+// Snaps to the last frame at-or-before t (a step animation, matching the
+// backend's discrete n_frames+1 snapshots — see movement_state's docstring).
+function renderPlantFrameAt(t) {
+  if (!plantLayoutInfo || !plantFrames) return;
+  const frames = plantFrames.frames;
+  let chosen = frames[0];
+  for (const f of frames) {
+    if (f.t > t) break;
+    chosen = f;
+  }
+  const lineFrame = (chosen.lines || [])[0]; // single-line query, so index 0
+  MovementLayout.renderPlantCards(document.getElementById('plantSvg'), plantLayoutInfo, lineFrame, plantColorMap);
+}
+</script>
+</body>
+</html>

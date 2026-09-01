@@ -1,0 +1,2362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Production Planner — Mixed Push/Pull</title>
+<style>
+  :root{
+    --bg:            #F1F3F6;
+    --card:          #FFFFFF;
+    --border:        #E4E7EC;
+    --text:          #1B2330;
+    --text-muted:    #6B7280;
+    --text-faint:    #9CA3AF;
+    --blue:          #2563EB;
+    --blue-dark:     #1D4ED8;
+    --blue-light:    #EAF1FF;
+    --green:         #16A34A;
+    --red:           #DC2626;
+    --amber:         #B45309;
+    --purple:        #7C3AED;
+    --purple-light:  #F3EEFF;
+    --shadow:        0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+    --shadow-md:     0 4px 10px rgba(16,24,40,.06), 0 2px 4px rgba(16,24,40,.05);
+    --radius:        12px;
+    --radius-sm:     8px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:flex;min-height:100vh;}
+
+  /* ---------------- Sidebar ---------------- */
+  .sidebar{
+    width:320px;flex:0 0 320px;padding:20px 16px 40px;
+    border-right:1px solid var(--border);
+    background:linear-gradient(180deg,#FAFBFD 0%,var(--bg) 220px);
+    overflow-y:auto;
+  }
+  .brand{display:flex;align-items:center;gap:10px;margin:4px 4px 4px;}
+  .brand-mark{
+    width:34px;height:34px;border-radius:9px;
+    background:linear-gradient(135deg,var(--purple),var(--blue));
+    display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow);flex:0 0 auto;
+  }
+  .brand-mark svg{width:18px;height:18px;}
+  .brand h1{font-size:16.5px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .brand p{font-size:11.5px;color:var(--text-muted);margin:1px 0 0;}
+
+  .status-row{display:flex;align-items:center;gap:8px;margin:14px 4px 18px;font-size:12px;color:var(--text-muted);}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--text-faint);flex:0 0 auto;}
+  .status-dot.ok{background:var(--green);box-shadow:0 0 0 3px rgba(22,163,74,.15);}
+  .status-dot.bad{background:var(--red);box-shadow:0 0 0 3px rgba(220,38,38,.15);}
+  .status-dot.pending{background:var(--amber);box-shadow:0 0 0 3px rgba(180,83,9,.15);}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:14px;overflow:hidden;}
+  .card-head{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;cursor:pointer;user-select:none;}
+  .card-head h2{font-size:12.5px;font-weight:700;margin:0;text-transform:uppercase;letter-spacing:.04em;color:var(--text);}
+  .chev{transition:transform .15s ease;color:var(--text-faint);}
+  .card.collapsed .chev{transform:rotate(-90deg);}
+  .card-body{padding:2px 16px 16px;}
+  .card.collapsed .card-body{display:none;}
+
+  .field{margin-bottom:13px;}
+  .field:last-child{margin-bottom:0;}
+  .field label{display:block;font-size:11.5px;font-weight:600;color:var(--text-muted);margin-bottom:5px;letter-spacing:.01em;}
+  select, input[type="number"], input[type="text"]{
+    width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);
+    font-size:13px;color:var(--text);background:#fff;font-family:inherit;
+  }
+  select:focus, input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-light);}
+  .hint{font-size:11px;color:var(--text-faint);margin-top:4px;}
+  .field-row{display:flex;gap:8px;}
+  .field-row .field{flex:1;}
+
+  .btn{
+    width:100%;padding:10px 14px;border:none;border-radius:var(--radius-sm);
+    font-size:13.5px;font-weight:600;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    transition:background .12s ease, transform .05s ease;
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn-primary{background:var(--blue);color:#fff;box-shadow:var(--shadow);}
+  .btn-primary:hover{background:var(--blue-dark);}
+  .btn-primary:disabled{background:#9CB8F5;cursor:not-allowed;}
+  .btn-ghost{background:#fff;color:var(--text);border:1px solid var(--border);}
+  .btn-ghost:hover{background:#F8F9FB;}
+  .spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .error-banner{background:#FEF2F2;border:1px solid #FCA5A5;color:#991B1B;padding:10px 12px;border-radius:var(--radius-sm);font-size:12px;margin-bottom:14px;line-height:1.5;}
+
+  .run-summary-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;}
+  .run-summary-row:last-child{border-bottom:none;}
+  .run-summary-row span:first-child{color:var(--text-muted);}
+  .run-summary-row span:last-child{font-weight:600;font-variant-numeric:tabular-nums;}
+
+  /* ---------------- Main ---------------- */
+  .main{flex:1;min-width:0;padding:20px 28px 40px;}
+  .topbar{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;}
+  .topbar h1{font-size:20px;margin:0 0 3px;letter-spacing:-.01em;}
+  .topbar p{margin:0;color:var(--text-muted);font-size:13px;}
+
+  /* top-level class tabs (All / Pull / Push) */
+  .tabs{display:flex;gap:4px;background:#E8EAEE;padding:4px;border-radius:10px;width:fit-content;margin-bottom:14px;}
+  .tab{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;color:var(--text-muted);cursor:pointer;border:none;background:transparent;transition:all .12s ease;}
+  .tab.active{background:#fff;color:var(--blue-dark);box-shadow:var(--shadow);}
+  .tab:hover:not(.active){color:var(--text);}
+  .tab .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:middle;}
+
+  /* secondary tabs within a class panel (Gantt / KPIs / Card Flow / Supermarkets) */
+  .subtabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:18px;}
+  .subtab{padding:9px 4px;margin-right:18px;font-size:12.5px;font-weight:600;color:var(--text-muted);cursor:pointer;border:none;background:transparent;border-bottom:2px solid transparent;}
+  .subtab.active{color:var(--blue-dark);border-bottom-color:var(--blue);}
+  .subtab:hover:not(.active){color:var(--text);}
+
+  /* time-range tabs (Full span / Day N) shown inside Gantt / KPI / Card Flow / Supermarket panels */
+  .daytabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:14px;border-bottom:1px dashed var(--border);}
+  .daytabs-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);margin-right:2px;}
+  .daytab{padding:5px 13px;border-radius:14px;font-size:12px;font-weight:600;color:var(--text-muted);cursor:pointer;border:1px solid var(--border);background:#fff;transition:all .12s ease;white-space:nowrap;display:inline-flex;flex-direction:column;align-items:center;line-height:1.25;}
+  .daytab-date{font-size:9px;font-weight:600;letter-spacing:.02em;opacity:.65;margin-top:1px;}
+  .daytab.active .daytab-date{opacity:.9;}
+  .daytab.active{background:var(--blue);color:#fff;border-color:var(--blue);}
+  .daytab:hover:not(.active){background:#F8F9FB;color:var(--text);}
+
+  .stat-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px;}
+  .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:13px 15px;box-shadow:var(--shadow);}
+  .stat-card .label{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);font-weight:700;margin-bottom:5px;}
+  .stat-card .value{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;}
+
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 22px 26px;margin-bottom:18px;}
+  .panel-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px;}
+  .panel-head h2{font-size:15px;margin:0 0 3px;}
+  .panel-head p{margin:0;font-size:12.5px;color:var(--text-muted);}
+
+  .legend{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:flex-end;max-width:420px;}
+  .legend-item{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-muted);}
+  .legend-swatch{width:13px;height:13px;border-radius:3px;flex:0 0 auto;border:1px solid rgba(0,0,0,.08);}
+  .legend-swatch.setup{background:repeating-linear-gradient(45deg,#C6CBD3,#C6CBD3 3px,#DADEE4 3px,#DADEE4 6px);}
+  .legend-swatch.idle{background:#fff;border:1px dashed #C9CDD4;}
+  .legend-swatch.off-shift{background:repeating-linear-gradient(135deg,#EEF0F3,#EEF0F3 3px,#E3E6EA 3px,#E3E6EA 6px);border:1px solid #D5D9DF;}
+  .legend-swatch.other{background:#D7DCE3;}
+
+  .empty-state{text-align:center;padding:60px 20px;color:var(--text-muted);}
+  .empty-state .icon{font-size:30px;margin-bottom:10px;}
+  .empty-state h3{color:var(--text);font-size:15px;margin:0 0 6px;}
+  .empty-state p{font-size:12.5px;max-width:460px;margin:0 auto;color:var(--text-muted);}
+  .empty-state code{background:#F1F3F6;padding:1px 6px;border-radius:5px;font-size:11.5px;}
+
+  .note-banner{background:#F8F9FB;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;color:var(--text-muted);margin-bottom:16px;line-height:1.5;}
+
+  /* ---------- Gantt ---------- */
+  .gantt-wrap{overflow-x:auto;}
+  .gantt{min-width:760px;}
+  .gantt-axis{display:flex;margin-left:96px;position:relative;height:22px;border-bottom:1px solid var(--border);margin-bottom:2px;}
+  .gantt-axis span{position:absolute;top:0;font-size:10.5px;color:var(--text-faint);transform:translateX(-50%);font-variant-numeric:tabular-nums;}
+  .gantt-daymarkers{position:relative;margin-left:96px;height:28px;margin-top:6px;border-top:1px dashed var(--border);}
+  .gantt-daymarker{position:absolute;top:0;transform:translateX(-1px);}
+  .gantt-daymarker-tick{width:1px;height:7px;background:var(--text-faint);}
+  .gantt-daymarker-label{position:absolute;top:9px;left:0;transform:translateX(-50%);font-size:10px;font-weight:700;color:var(--text-muted);white-space:nowrap;}
+  .gantt-row{display:flex;align-items:center;margin-bottom:10px;}
+  .gantt-row-label{width:96px;flex:0 0 96px;font-size:12.5px;font-weight:700;color:var(--text);padding-right:10px;}
+  .gantt-track{position:relative;flex:1;height:46px;background:#FBFBFC;border:1px solid var(--border);border-radius:7px;overflow:hidden;}
+  .gantt-gridline{position:absolute;top:0;bottom:0;width:1px;background:#ECEEF1;}
+  .gantt-shiftline{position:absolute;top:0;bottom:0;width:2px;background:#C5CBD4;}
+  .gantt-seg{position:absolute;top:3px;bottom:3px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;color:#fff;overflow:hidden;white-space:nowrap;cursor:default;box-shadow:inset 0 0 0 1px rgba(0,0,0,.05);}
+  .gantt-seg.setup{background:repeating-linear-gradient(45deg,#B7BEC9,#B7BEC9 4px,#CDD3DB 4px,#CDD3DB 8px);color:#4B5563;}
+  .gantt-seg.idle{background:transparent;border:1px dashed #D5D9DF;box-shadow:none;}
+  .gantt-seg.off-shift{background:repeating-linear-gradient(135deg,#EEF0F3,#EEF0F3 5px,#E3E6EA 5px,#E3E6EA 10px);border:1px solid #D5D9DF;box-shadow:none;color:#9AA1AC;}
+  .gantt-seg.other{background:#D7DCE3;color:#6B7280;}
+  .gantt-seg .seg-text{padding:0 6px;text-overflow:ellipsis;overflow:hidden;}
+  .gantt-seg .seg-rate{font-weight:600;opacity:.9;}
+
+  .tooltip{position:fixed;z-index:50;background:#1B2330;color:#fff;padding:8px 11px;border-radius:8px;font-size:11.5px;line-height:1.5;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25);max-width:230px;display:none;}
+  .tooltip b{color:#fff;}
+  .tooltip .tt-muted{color:#9CA3AF;}
+
+  /* ---------- KPI cards ---------- */
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;}
+  .kpi-line-card{border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;background:#FCFCFD;}
+  .kpi-line-card h3{margin:0 0 10px;font-size:13.5px;}
+  .kpi-line-card .row{display:flex;justify-content:space-between;font-size:12.5px;padding:4px 0;border-bottom:1px dashed var(--border);}
+  .kpi-line-card .row:last-of-type{border-bottom:none;}
+  .kpi-line-card .row span:last-child{font-weight:700;font-variant-numeric:tabular-nums;}
+  .util-bar{height:6px;border-radius:4px;background:#E8EAEE;overflow:hidden;margin-top:3px;}
+  .util-bar > div{height:100%;background:var(--blue);}
+  .util-row{padding:6px 0;font-size:11.5px;}
+  .util-row .util-label{display:flex;justify-content:space-between;color:var(--text-muted);margin-bottom:2px;}
+  .class-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;margin-left:8px;vertical-align:middle;}
+  .class-badge.pull{background:var(--purple-light);color:var(--purple);}
+  .class-badge.push{background:var(--blue-light);color:var(--blue-dark);}
+
+  /* ---------- Gate status ---------- */
+  .gate-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;}
+  .gate-card{border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;background:#FCFCFD;}
+  .gate-card h4{margin:0 0 8px;font-size:13px;}
+  .gate-card .row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:var(--text-muted);}
+  .gate-card .row span:last-child{font-weight:600;color:var(--text);}
+
+  /* ---------------- Supermarket state (All Production tab) ---------------- */
+  .sm-line-block{margin-bottom:26px;}
+  .sm-line-block h3{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:8px;}
+  .sm-row-type-badge{display:inline-block;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:2px 7px;border-radius:20px;}
+  .sm-row-type-badge.main{background:var(--blue-light);color:var(--blue-dark);}
+  .sm-row-type-badge.exotic{background:#FFF4E5;color:var(--amber);}
+  .sm-fillbar{height:8px;border-radius:5px;background:#E8EAEE;overflow:hidden;width:100%;min-width:70px;}
+  .sm-fillbar > div{height:100%;background:var(--blue);}
+  .sm-fillbar.exotic > div{background:var(--amber);}
+  .sm-fillbar.empty > div{background:#C6CBD3;}
+  .sm-fill-cell{display:flex;align-items:center;gap:8px;min-width:130px;}
+  .sm-fill-cell .pct{font-size:11px;color:var(--text-faint);min-width:60px;text-align:right;}
+  .sm-shared-note{font-size:10.5px;color:var(--text-faint);}
+  .sm-empty-slot{color:var(--text-faint);font-style:italic;}
+  .sm-routed-banner{margin-top:10px;padding:10px 12px;border-radius:var(--radius-sm);background:#FFF4E5;border:1px solid #F3D9A8;font-size:12px;color:var(--amber);}
+  .sm-routed-banner b{color:var(--text);}
+  .sm-routed-chip{display:inline-flex;align-items:center;gap:5px;background:#fff;border:1px solid #F3D9A8;border-radius:20px;padding:3px 9px;margin:4px 6px 0 0;font-size:11px;color:var(--text);}
+  .sm-row-charts-grid{display:flex;flex-direction:column;gap:0;margin-top:8px;}
+  .sm-row-chart-card{border-bottom:1px dashed var(--border);padding-bottom:18px;margin-bottom:18px;}
+  .sm-row-chart-card:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0;}
+  .sm-row-chart-card h5{margin:0 0 8px;font-size:13px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .sm-row-chart-card .cap-note{font-size:10.5px;color:var(--text-faint);font-weight:400;}
+
+  /* ---------------- Card Flow (stacked area) ---------------- */
+  .cf-wrap{overflow-x:auto;}
+  .cf-chart-svg{display:block;}
+  .cf-axis-label{font-size:10.5px;fill:var(--text-faint);font-variant-numeric:tabular-nums;}
+  .cf-gridline{stroke:#ECEEF1;stroke-width:1;}
+  .cf-line{fill:none;stroke-width:2.25;}
+  .cf-dot{stroke:#fff;stroke-width:1;}
+  .cf-area{cursor:default;}
+  .cf-area:hover{filter:brightness(1.08);}
+  .cf-daymarker-sep{stroke:var(--border);stroke-width:1;stroke-dasharray:2,2;}
+  .cf-daymarker-tick{stroke:var(--text-faint);stroke-width:1;}
+  .cf-daymarker-label{font-size:10px;font-weight:700;fill:var(--text-muted);font-variant-numeric:tabular-nums;}
+
+  /* ---------------- Supermarkets ---------------- */
+  .sm-controls{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+  .sm-controls select{width:auto;min-width:220px;}
+  .restmenge-strip{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;}
+  .restmenge-chip{background:#F8F9FB;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;min-width:140px;}
+  .restmenge-chip .rm-line{font-weight:700;color:var(--text);}
+  .restmenge-chip .rm-product{color:var(--text-muted);margin:2px 0 4px;}
+  .restmenge-chip .rm-val{font-weight:700;font-variant-numeric:tabular-nums;color:var(--amber);}
+
+  /* ---------------- Push policy (sidebar) ---------------- */
+  .policy-hours-hint{font-size:11px;color:var(--text-faint);margin:-8px 0 13px;}
+  .policy-status{font-size:11.5px;margin-top:8px;line-height:1.5;}
+  .policy-status.ok{color:var(--green);}
+  .policy-status.bad{color:var(--red);}
+  .policy-status.pending{color:var(--text-muted);}
+
+  /* ---------------- Simple data tables (push delivery / issues) ---------------- */
+  .data-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .data-table th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);font-weight:700;padding:0 10px 8px;border-bottom:1px solid var(--border);}
+  .data-table td{padding:8px 10px;border-bottom:1px dashed var(--border);font-variant-numeric:tabular-nums;}
+  .data-table tr:last-child td{border-bottom:none;}
+  .data-table td.num{text-align:right;}
+  .delta-chip{display:inline-block;padding:2px 8px;border-radius:20px;font-weight:700;font-size:11.5px;}
+  .delta-chip.late{background:#FEF2F2;color:var(--red);}
+  .delta-chip.early{background:#F0FDF4;color:var(--green);}
+  .delta-chip.na{background:#F1F3F6;color:var(--text-faint);}
+  .rush-chip{display:inline-block;padding:2px 8px;border-radius:20px;font-weight:700;font-size:10.5px;background:var(--purple-light);color:var(--purple);}
+  .table-wrap{overflow-x:auto;}
+  .section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--text-faint);margin:0 0 10px;}
+  .issue-block{margin-bottom:22px;}
+  .issue-block:last-child{margin-bottom:0;}
+
+  ::-webkit-scrollbar{height:8px;width:8px;}
+  ::-webkit-scrollbar-thumb{background:#D3D7DD;border-radius:4px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  @media (max-width: 980px){ .stat-strip{grid-template-columns:repeat(3,1fr);} }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 17L10 11L14 15L20 7" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="20" cy="7" r="2" fill="white"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Mixed Push/Pull</h1>
+        <p>HTL3 · HTL5 · HTL6 · Option 3</p>
+      </div>
+    </div>
+
+    <div class="status-row">
+      <div class="status-dot pending" id="statusDot"></div>
+      <span id="statusText">Connecting to API…</span>
+    </div>
+
+    <div class="card" id="cardConn">
+      <div class="card-head" onclick="toggleCard('cardConn')">
+        <h2>API Connection</h2>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="#9CA3AF" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label>API Base URL</label>
+          <input type="text" id="apiBaseInput" value="http://localhost:8000" />
+          <div class="hint">FastAPI server from <code>api_server_mixed.py</code> (uvicorn).</div>
+        </div>
+        <button class="btn btn-ghost" onclick="checkHealth()">Reconnect</button>
+      </div>
+    </div>
+
+    <div class="card" id="cardParams">
+      <div class="card-head" onclick="toggleCard('cardParams')">
+        <h2>Run Parameters</h2>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="#9CA3AF" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="field-row">
+          <div class="field">
+            <label>Workers</label>
+            <select id="inWorkers"><option value="1">1 MA</option><option value="2">2 MA</option></select>
+          </div>
+          <div class="field">
+            <label>Seed</label>
+            <input type="number" id="inSeed" value="42" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Day start hour</label>
+            <input type="number" id="inDayStartHour" value="6" min="0" max="23" />
+          </div>
+          <div class="field">
+            <label>Start date</label>
+            <input type="date" id="inStartDate" />
+          </div>
+        </div>
+        <div class="hint" style="margin-top:-6px;margin-bottom:13px;">Used to label the Gantt axis with real clock times and dates.</div>
+        <div class="field">
+          <label>Push chunk size</label>
+          <input type="number" id="inChunkSize" value="200" min="1" />
+        </div>
+        <div class="field">
+          <label>Horizon override (h) — optional</label>
+          <input type="number" id="inHorizon" placeholder="auto" min="0" />
+          <div class="hint">Leave blank to use <code>run_mixed()</code>'s own estimate.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card collapsed" id="cardPushPolicy">
+      <div class="card-head" onclick="toggleCard('cardPushPolicy')">
+        <h2>Push Policy</h2>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="#9CA3AF" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label>Frozen zone (cards)</label>
+          <input type="number" id="ppFrozenZoneCards" min="0" step="1" />
+          <div class="hint" id="ppFrozenZoneHoursHint">≈ — h at current card time</div>
+        </div>
+        <div class="field">
+          <label>Card production time (min)</label>
+          <input type="number" id="ppCardProdTimeMin" min="0.1" step="0.5" />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Visibility (days)</label>
+            <input type="number" id="ppVisibilityDays" min="0" step="1" />
+          </div>
+          <div class="field">
+            <label>Retry interval (h)</label>
+            <input type="number" id="ppRetryIntervalH" min="0.1" step="0.5" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Ideal lead time (h)</label>
+            <input type="number" id="ppIdealLeadH" min="0" step="0.5" />
+          </div>
+          <div class="field">
+            <label>Max lead time (h)</label>
+            <input type="number" id="ppMaxLeadH" min="0" step="0.5" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Rush threshold (h)</label>
+          <input type="number" id="ppRushThresholdH" min="0" step="0.5" />
+          <div class="hint">Inside this many hours of due date, force-assign to the least-busy compatible line and jump the queue.</div>
+        </div>
+        <button class="btn btn-ghost" id="ppSaveBtn" onclick="savePushPolicy()">Save Push Policy</button>
+        <div class="policy-status pending" id="ppStatus">Not loaded yet.</div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="runBtn" onclick="runMixedSimulation()">
+      <span id="runBtnLabel">Run Mixed Simulation</span>
+    </button>
+    <div class="hint" style="margin:6px 4px 0;">
+      Calls <code>POST /api/simulate_mixed</code> — class-1 (Kanban/pull) is
+      priority, non-preemptive; class-2 (push) fills in after a 1-min idle
+      gap, chunked so pull can always jump the queue.
+    </div>
+
+    <div id="errorSlot"></div>
+
+    <div class="card" id="cardRun" style="display:none;">
+      <div class="card-head" onclick="toggleCard('cardRun')">
+        <h2>Last Run</h2>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="#9CA3AF" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="card-body" id="runSummaryBody"></div>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="mainTitle">Mixed Production Throughput</h1>
+        <p id="mainSubtitle">Run a simulation from the sidebar to see the schedule.</p>
+      </div>
+      <a id="movementLink" href="#" class="btn btn-ghost" style="width:auto;padding:9px 16px;opacity:.5;pointer-events:none;" target="_blank" rel="noopener" onclick="return openMovementSimulation(event)">
+        &#8618; Open Movement Simulation
+      </a>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="all" onclick="switchTopTab('all')">All Production</button>
+      <button class="tab" data-tab="pull" onclick="switchTopTab('pull')"><span class="dot" style="background:var(--purple)"></span>Kanban (Pull)</button>
+      <button class="tab" data-tab="push" onclick="switchTopTab('push')"><span class="dot" style="background:var(--blue)"></span>Push</button>
+    </div>
+
+    <div class="stat-strip" id="statStrip" style="display:none;"></div>
+
+    <!-- ============ ALL PRODUCTION ============ -->
+    <div class="top-panel" id="top-all">
+      <div class="subtabs">
+        <button class="subtab active" data-sub="all-gantt" onclick="switchSubTab('all','gantt')">Gantt</button>
+        <button class="subtab" data-sub="all-kpi" onclick="switchSubTab('all','kpi')">KPIs</button>
+        <button class="subtab" data-sub="all-gate" onclick="switchSubTab('all','gate')">Gate Status</button>
+        <button class="subtab" data-sub="all-supermarket" onclick="switchSubTab('all','supermarket')">Supermarkets</button>
+      </div>
+
+      <div class="sub-panel" id="sub-all-gantt">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Combined schedule, per line</h2><p id="allGanttSubline">Every class-1 (Kanban) and class-2 (push) segment, on one shared timeline per line.</p></div>
+            <div class="legend" id="allLegend"></div>
+          </div>
+          <div id="daytabs-all-gantt"></div>
+          <div id="allGanttContainer"><div class="empty-state"><div class="icon">📊</div><h3>No simulation run yet</h3><p>Click <b>Run Mixed Simulation</b> in the sidebar. This calls <code>POST /api/simulate_mixed</code> — a real SimPy pass over HTL3 / HTL5 / HTL6 sharing one clock across both production classes.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-all-kpi" style="display:none;">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Per-line KPIs (combined)</h2><p>From <code>kpi_by_line</code> — passed/scrapped/reworked across BOTH classes together (station/buffer stats are shared physical resources, not splittable by class).</p></div></div>
+          <div id="daytabs-all-kpi"></div>
+          <div class="note-banner" id="allKpiDayNote" style="display:none;">These KPI totals are aggregated over the whole run — the API doesn't return a per-day breakdown, so switching days here doesn't change the numbers below. Use the Gantt tab to inspect what happened on a specific day.</div>
+          <div id="allKpiContainer"><div class="empty-state"><div class="icon">📈</div><h3>No data yet</h3><p>Run a simulation to populate combined pass/scrap counts, cycle time, station utilisation, and buffer fill.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-all-gate" style="display:none;">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Gate status</h2><p>From <code>gate_status</code> — which product is currently set up on each line's <code>LinePriorityGate</code>, and how long since the last class-1/class-2 activity.</p></div></div>
+          <div id="gateContainer"><div class="empty-state"><div class="icon">🚦</div><h3>No data yet</h3><p>Run a simulation to see live gate state per line.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-all-supermarket" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Supermarket state — every physical row, over time</h2><p>From <code>GET /api/mixed/supermarket_state</code> — same hourly-bucketed, day-tabbed chart style as the Kanban (Pull) tab's Supermarkets view, but one chart PER physical <b>Main runner</b> / <b>Exotic</b> row, for one line at a time.</p></div>
+          </div>
+          <div id="smLineTabs" class="daytabs"></div>
+          <div id="daytabs-all-supermarket"></div>
+          <div class="legend" id="allSmLegend"></div>
+          <div id="supermarketStateContainer"><div class="empty-state"><div class="icon">🗄️</div><h3>No data yet</h3><p>Run a simulation to see current Supermarket occupancy, row by row.</p></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ KANBAN (PULL) ============ -->
+    <div class="top-panel" id="top-pull" style="display:none;">
+      <div class="subtabs">
+        <button class="subtab active" data-sub="pull-gantt" onclick="switchSubTab('pull','gantt')">Gantt</button>
+        <button class="subtab" data-sub="pull-kpi" onclick="switchSubTab('pull','kpi')">KPIs</button>
+        <button class="subtab" data-sub="pull-cardflow" onclick="switchSubTab('pull','cardflow')">Card Flow</button>
+        <button class="subtab" data-sub="pull-shortfall" onclick="switchSubTab('pull','shortfall')">Shortfall</button>
+        <button class="subtab" data-sub="pull-supermarket" onclick="switchSubTab('pull','supermarket')">Supermarkets</button>
+      </div>
+
+      <div class="sub-panel" id="sub-pull-gantt">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Kanban (class-1) schedule, per line</h2><p>Same timeline as "All Production" — non-Kanban job segments are shown as grey <b>other</b> blocks rather than hidden, so gaps stay honest about what's really running.</p></div>
+            <div class="legend" id="pullLegend"></div>
+          </div>
+          <div id="daytabs-pull-gantt"></div>
+          <div id="pullGanttContainer"><div class="empty-state"><div class="icon">🔁</div><h3>No simulation run yet</h3><p>Run a mixed simulation to see the pull-only view.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-pull-kpi" style="display:none;">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Per-line KPIs — pull only</h2><p>From <code>kpi_by_class[line].pull</code> — parts whose <code>product_type</code> is in the CustomerDemandKanban product set.</p></div></div>
+          <div id="daytabs-pull-kpi"></div>
+          <div class="note-banner" id="pullKpiDayNote" style="display:none;">These KPI totals are aggregated over the whole run — the API doesn't return a per-day breakdown, so switching days here doesn't change the numbers below. Use the Gantt tab to inspect what happened on a specific day.</div>
+          <div id="pullKpiContainer"><div class="empty-state"><div class="icon">📈</div><h3>No data yet</h3></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-pull-cardflow" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Kanban cards per state over time</h2><p id="cardFlowSubline">From <code>card_flow.series</code> / <code>card_flow.series_by_line</code>.</p></div>
+            <div class="legend" id="cfLegend"></div>
+          </div>
+          <div id="daytabs-pull-cardflow"></div>
+          <div class="sm-controls">
+            <label style="font-size:11.5px;font-weight:600;color:var(--text-muted);">Line:</label>
+            <select id="cfLineSelect" onchange="renderCardFlowChart(lastCardFlowData)"></select>
+          </div>
+          <div id="cardFlowContainer"><div class="empty-state"><div class="icon">🗂️</div><h3>No data yet</h3><p>Run a simulation to plot the time-bucketed card-state census.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-pull-shortfall" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Card shortfall — withdrawals with no card available</h2><p id="shortfallSubline">From <code>card_flow.shortfall_by_line</code> — only where a customer tried to withdraw a Kanban card and the supermarket had none to give. "Total" compares lines side by side; pick a line to see its per-product breakdown.</p></div>
+            <div class="legend" id="sfLegend"></div>
+          </div>
+          <div id="daytabs-pull-shortfall"></div>
+          <div class="sm-controls">
+            <label style="font-size:11.5px;font-weight:600;color:var(--text-muted);">Shortfall (line):</label>
+            <select id="sfLineSelect" onchange="renderShortfallChart(lastCardFlowData)"></select>
+          </div>
+          <div id="shortfallContainer"><div class="empty-state"><div class="icon">⚠️</div><h3>No data yet</h3><p>Run a simulation to see whether any Kanban withdrawal ever found an empty supermarket slot.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-pull-supermarket" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Supermarket stock levels</h2><p>From <code>line_units_series</code> — stock on hand per line, stacked by product.</p></div>
+            <div class="legend" id="luLegend"></div>
+          </div>
+          <div id="daytabs-pull-supermarket"></div>
+          <div class="sm-controls">
+            <label style="font-size:11.5px;font-weight:600;color:var(--text-muted);">Supermarket (line):</label>
+            <select id="luSelect" onchange="renderLineUnitsCharts()"></select>
+          </div>
+          <h3 style="margin:18px 0 6px;font-size:13.5px;">Packages (n_available) vs time</h3>
+          <div id="lineUnitsPackagesContainer"><div class="empty-state"><div class="icon">📦</div><h3>No data yet</h3></div></div>
+          <h3 style="margin:24px 0 6px;font-size:13.5px;">Restmenge (pcs, partial pack) vs time</h3>
+          <div id="lineUnitsRestmengeContainer"><div class="empty-state"><div class="icon">🔢</div><h3>No data yet</h3></div></div>
+          <div id="restmengeStrip"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ PUSH ============ -->
+    <div class="top-panel" id="top-push" style="display:none;">
+      <div class="subtabs">
+        <button class="subtab active" data-sub="push-gantt" onclick="switchSubTab('push','gantt')">Gantt</button>
+        <button class="subtab" data-sub="push-kpi" onclick="switchSubTab('push','kpi')">KPIs</button>
+        <button class="subtab" data-sub="push-delivery" onclick="switchSubTab('push','delivery')">Delivery</button>
+        <button class="subtab" data-sub="push-issues" onclick="switchSubTab('push','issues')">Issues</button>
+      </div>
+
+      <div class="sub-panel" id="sub-push-gantt">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Push (class-2) schedule, per line</h2><p>Same timeline as "All Production" — non-push job segments are shown as grey <b>other</b> blocks rather than hidden.</p></div>
+            <div class="legend" id="pushLegend"></div>
+          </div>
+          <div id="daytabs-push-gantt"></div>
+          <div id="pushGanttContainer"><div class="empty-state"><div class="icon">📦</div><h3>No simulation run yet</h3><p>Run a mixed simulation to see the push-only view.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-push-kpi" style="display:none;">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Per-line KPIs — push only</h2><p>From <code>kpi_by_class[line].push</code> — parts whose <code>product_type</code> is in the CustomerDemand product set.</p></div></div>
+          <div id="daytabs-push-kpi"></div>
+          <div class="note-banner">There is no push-side restmenge/card-flow equivalent in <code>mixed_runner.py</code> yet — unfinished push chunks aren't tracked as a queryable list, so this tab is pass/scrap/rework/cycle-time only.</div>
+          <div class="note-banner" id="pushKpiDayNote" style="display:none;">These KPI totals are aggregated over the whole run — the API doesn't return a per-day breakdown, so switching days here doesn't change the numbers below. Use the Gantt tab to inspect what happened on a specific day.</div>
+          <div id="pushKpiContainer"><div class="empty-state"><div class="icon">📈</div><h3>No data yet</h3></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-push-delivery" style="display:none;">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Push delivery performance</h2><p>From <code>push_kpi</code> / <code>push_delivery_log</code> — due date vs. delivered date for every completed push chunk.</p></div></div>
+          <div class="note-banner">Full-run log — <code>PushDeliveryRecord</code> carries calendar due/delivered dates, not sim-elapsed time, so there's no day-tab breakdown here.</div>
+          <div class="stat-strip" id="pushDeliveryStatStrip" style="display:none;"></div>
+          <div id="pushDeliveryTableContainer"><div class="empty-state"><div class="icon">🚚</div><h3>No data yet</h3><p>Run a simulation to see completed push chunks against their due dates.</p></div></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-push-issues" style="display:none;">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Unassigned orders &amp; supermarket overflow</h2><p>From <code>push_unassigned_log</code> and <code>supermarket_overflow_log</code> — orders that couldn't be placed, and exotic-slot capacity flags (never blocking, just logged).</p></div></div>
+          <div class="issue-block">
+            <div class="section-title">Unassigned orders</div>
+            <div id="pushUnassignedContainer"><div class="empty-state"><div class="icon">✅</div><h3>None yet</h3><p>Run a simulation — orders with no PRODUCT_MATRIX entry, no parseable due date, or no feasible line show up here.</p></div></div>
+          </div>
+          <div class="issue-block">
+            <div class="section-title">Exotic supermarket overflow</div>
+            <div id="pushOverflowContainer"><div class="empty-state"><div class="icon">✅</div><h3>None yet</h3><p>Flagged whenever a finished push chunk had nowhere to deposit — production kept going regardless.</p></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+/* =========================================================================
+   State
+   ========================================================================= */
+let API_BASE = document.getElementById('apiBaseInput').value.replace(/\/+$/,'');
+let lastResult = null;        // full /api/simulate_mixed response
+let lastCardFlowData = null;  // card_flow payload, for the line-select re-render
+let activeTopTab = 'all';     // 'all' | 'pull' | 'push'
+
+// Which time-range tab is active per panel: 'full' or a 1-based day number.
+let dayTabState = {
+  'all-gantt':'full', 'all-kpi':'full', 'all-supermarket':'full',
+  'pull-gantt':'full', 'pull-kpi':'full', 'pull-cardflow':'full', 'pull-shortfall':'full', 'pull-supermarket':'full',
+  'push-gantt':'full', 'push-kpi':'full',
+};
+
+const GANTT_PX_PER_DAY = 400; // full-span Gantt zoom: px per 24h-of-time_unit, tuned so ~2–2.5 days fit before horizontal scroll kicks in
+
+const COLOR_PALETTE = ['#2563EB','#F59E0B','#F97316','#7C3AED','#0D9488','#DB2777','#16A34A','#4F46E5','#0EA5E9','#CA8A04','#65A30D','#C026D3'];
+let skuColorMap = {};
+let cardStateColorMap = {};
+let lineUnitsColorMap = {};
+let lineColorMap = {};
+let shortfallProductColorMap = {};
+
+function colorForSku(sku){
+  if(!sku) return '#9CA3AF';
+  if(!skuColorMap[sku]){
+    const idx = Object.keys(skuColorMap).length;
+    skuColorMap[sku] = COLOR_PALETTE[idx % COLOR_PALETTE.length];
+  }
+  return skuColorMap[sku];
+}
+function colorForState(state, idx){
+  if(!cardStateColorMap[state]) cardStateColorMap[state] = COLOR_PALETTE[idx % COLOR_PALETTE.length];
+  return cardStateColorMap[state];
+}
+function colorForProduct(product, idx){
+  if(!lineUnitsColorMap[product]) lineUnitsColorMap[product] = COLOR_PALETTE[idx % COLOR_PALETTE.length];
+  return lineUnitsColorMap[product];
+}
+function colorForLine(lineId, idx){
+  if(!lineColorMap[lineId]) lineColorMap[lineId] = COLOR_PALETTE[idx % COLOR_PALETTE.length];
+  return lineColorMap[lineId];
+}
+function colorForShortfallProduct(product, idx){
+  if(!shortfallProductColorMap[product]) shortfallProductColorMap[product] = COLOR_PALETTE[idx % COLOR_PALETTE.length];
+  return shortfallProductColorMap[product];
+}
+
+/* =========================================================================
+   Small utilities
+   ========================================================================= */
+function toggleCard(id){ document.getElementById(id).classList.toggle('collapsed'); }
+function escapeHtml(s){ const d = document.createElement('div'); d.innerText = String(s); return d.innerHTML; }
+function unitLabel(u){ return u === 'h' ? 'h' : (u === 'min' ? 'm' : 's'); }
+
+/* ---- Clock-time / calendar-date helpers for the Gantt axis ----
+   t=0 in the sim corresponds to "Day start hour" (default 6am) on the
+   configured "Start date". Elapsed sim time is converted to a real
+   hour-of-day / calendar date purely for display on the Gantt charts. */
+function elapsedToHours(elapsed, unit){
+  if(unit === 'min') return elapsed / 60;
+  if(unit === 's') return elapsed / 3600;
+  return elapsed; // 'h'
+}
+function formatClockTime(absHour){
+  let h = ((absHour % 24) + 24) % 24;
+  let hh = Math.floor(h + 1e-9);
+  let mm = Math.round((h - hh) * 60);
+  if(mm >= 60){ mm = 0; hh = (hh + 1) % 24; }
+  const period = hh < 12 ? 'am' : 'pm';
+  let hour12 = hh % 12; if(hour12 === 0) hour12 = 12;
+  return mm === 0 ? `${hour12}${period}` : `${hour12}:${String(mm).padStart(2,'0')}${period}`;
+}
+// Fixed real-world clock boundaries at 6am / 2pm / 10pm — drawn as slightly
+// thicker gridlines on the Gantt (and card-flow-style) charts. These three
+// are exactly 8h apart (6, 14, 22 all ≡ 6 mod 8), so regardless of the
+// configured "Day start hour" they always land on elapsed times satisfying
+// elapsedHours(t) ≡ (6 - dayStartHour) mod 8.
+function hoursToElapsed(hours, unit){
+  if(unit === 'min') return hours * 60;
+  if(unit === 's') return hours * 3600;
+  return hours; // 'h'
+}
+function shiftBoundaryTimes(winStart, winEnd, unit){
+  const dayStartHour = getDayStartHour();
+  const phase = (((6 - dayStartHour) % 8) + 8) % 8;
+  const startHours = elapsedToHours(winStart, unit);
+  const endHours = elapsedToHours(winEnd, unit);
+  const times = [];
+  let k = Math.ceil((startHours - phase) / 8 - 1e-9);
+  for(let h = phase + k*8; h <= endHours + 1e-9; h += 8){
+    if(h >= startHours - 1e-9) times.push(hoursToElapsed(h, unit));
+  }
+  return times;
+}
+function getStartDate(){
+  const val = document.getElementById('inStartDate') && document.getElementById('inStartDate').value;
+  if(val){
+    const [y,m,d] = val.split('-').map(Number);
+    if(y && m && d) return new Date(y, m-1, d);
+  }
+  return new Date();
+}
+function formatDateDMY(date){
+  const dd = String(date.getDate()).padStart(2,'0');
+  const mm = String(date.getMonth()+1).padStart(2,'0');
+  const yyyy = date.getFullYear();
+  return `${dd}.${mm}.${yyyy}`;
+}
+function dateForDay(dayNumber){
+  const start = getStartDate();
+  const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + (dayNumber - 1));
+  return formatDateDMY(d);
+}
+function getDayStartHour(){
+  const el = document.getElementById('inDayStartHour');
+  return (el && parseInt(el.value, 10)) || 0;
+}
+function showError(msg){ document.getElementById('errorSlot').innerHTML = `<div class="error-banner"><b>Request failed.</b><br>${escapeHtml(msg)}</div>`; }
+function clearError(){ document.getElementById('errorSlot').innerHTML = ''; }
+function setStatus(state, text){
+  document.getElementById('statusDot').className = 'status-dot ' + state;
+  document.getElementById('statusText').innerText = text;
+}
+function niceTickStep(range, targetTicks){
+  if(range <= 0) return 1;
+  const raw = range / targetTicks;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  let step;
+  if(norm < 1.5) step = 1; else if(norm < 3) step = 2; else if(norm < 7) step = 5; else step = 10;
+  return step * mag;
+}
+function showTooltip(evt, html){
+  const tt = document.getElementById('tooltip');
+  tt.innerHTML = html; tt.style.display = 'block';
+  const x = evt.clientX + 14, y = evt.clientY + 14;
+  tt.style.left = Math.min(x, window.innerWidth - 250) + 'px';
+  tt.style.top = Math.min(y, window.innerHeight - 120) + 'px';
+}
+function hideTooltip(){ document.getElementById('tooltip').style.display = 'none'; }
+
+/* =========================================================================
+   Time-range ("Full span" / "Day N") tabs — shared across Gantt / KPI /
+   Card Flow / Supermarket panels. Days are 24h-of-time_unit blocks starting
+   at t=0 (the run's own start), i.e. Day 1 = [0, 24h), Day 2 = [24h, 48h), …
+   ========================================================================= */
+function dayLengthFor(unit){ return unit === 'h' ? 24 : (unit === 'min' ? 1440 : 86400); }
+function dayCountFor(horizon, unit){
+  if(!horizon || horizon <= 0) return 1;
+  return Math.max(1, Math.ceil((horizon - 1e-9) / dayLengthFor(unit)));
+}
+function dayWindowFor(day, unit, horizon){
+  const dayLen = dayLengthFor(unit);
+  const start = (day-1)*dayLen;
+  const end = Math.min(day*dayLen, horizon);
+  return { start, end };
+}
+
+// Maps a daytabs key to the function that re-renders that panel from cached data.
+const DAY_TAB_RENDERERS = {
+  'all-gantt':        renderAllGanttPanel,
+  'all-kpi':          renderAllKpiPanel,
+  'all-supermarket':  renderAllSupermarketPanel,
+  'pull-gantt':       renderPullGanttPanel,
+  'pull-kpi':         renderPullKpiPanel,
+  'pull-cardflow':    ()=>renderCardFlowChart(lastCardFlowData),
+  'pull-shortfall':   ()=>renderShortfallChart(lastCardFlowData),
+  'pull-supermarket': renderLineUnitsCharts,
+  'push-gantt':       renderPushGanttPanel,
+  'push-kpi':         renderPushKpiPanel,
+};
+
+function setDayTab(key, val){
+  dayTabState[key] = val;
+  const fn = DAY_TAB_RENDERERS[key];
+  if(fn) fn();
+}
+
+// Renders the "Full span / Day 1 / Day 2 / …" pill row into #daytabs-<key>.
+function renderDayTabs(key, horizon, unit){
+  const el = document.getElementById('daytabs-' + key);
+  if(!el) return;
+  if(!horizon || horizon <= 0){ el.innerHTML = ''; return; }
+  const nDays = dayCountFor(horizon, unit);
+  let active = dayTabState[key] || 'full';
+  if(active !== 'full' && active > nDays) active = 'full';
+  dayTabState[key] = active;
+
+  if(nDays <= 1){
+    // Nothing to switch between — still show the row for consistency, "Full span" only.
+    el.innerHTML = `<div class="daytabs"><span class="daytabs-label">View</span>
+      <button class="daytab active">Full span</button></div>`;
+    return;
+  }
+
+  let html = `<div class="daytabs"><span class="daytabs-label">View</span>
+    <button class="daytab ${active==='full'?'active':''}" onclick="setDayTab('${key}','full')">Full span</button>`;
+  for(let d=1; d<=nDays; d++){
+    html += `<button class="daytab ${active===d?'active':''}" onclick="setDayTab('${key}',${d})">Day ${d}<span class="daytab-date">${dateForDay(d)}</span></button>`;
+  }
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+function absClockLabel(elapsed, unit){
+  const dayStartHour = getDayStartHour();
+  const elapsedHours = elapsedToHours(elapsed, unit);
+  const absHour = dayStartHour + elapsedHours;
+  const dayIdx = Math.floor(elapsedHours/24) + 1;
+  return `${formatClockTime(absHour)} · Day ${dayIdx} (${dateForDay(dayIdx)})`;
+}
+function productionTypeLabel(seg){
+  const cls = segSimClass(seg);
+  if(cls === 'pull') return 'Pull';
+  if(cls === 'push') return 'Push';
+  return null;
+}
+function jobTooltip(seg, unit){
+  const typeLabel = productionTypeLabel(seg);
+  return `<b>${seg.sachnummer||'—'}</b><br>`+
+    `${seg.kunde? 'Customer: '+seg.kunde+'<br>':''}`+
+    `${seg.productClass? 'Class: '+seg.productClass+'<br>':''}`+
+    `${typeLabel? 'Type: '+typeLabel+'<br>':''}`+
+    `Units: ${seg.units}/${seg.packageSize}<br>`+
+    `Rate: ${seg.rate!=null? seg.rate.toFixed(1)+' pcs/h':'—'}<br>`+
+    `Time: ${absClockLabel(seg.start, unit)}<br>`+
+    `<span class="tt-muted">Duration: ${seg.duration.toFixed(3)} ${unitLabel(unit)} · start ${seg.start.toFixed(2)} ${unitLabel(unit)}</span>`;
+}
+function setupTooltip(seg, unit){
+  return `<b>Changeover</b><br>${seg.fromSku||'—'} → ${seg.toSku||'—'}<br>Crew: ${seg.workers!=null? seg.workers+'MA':'—'}<br>`+
+    `${seg.note? seg.note+'<br>':''}Time: ${absClockLabel(seg.start, unit)}<br>`+
+    `<span class="tt-muted">Duration: ${seg.duration.toFixed(3)} ${unitLabel(unit)} · start ${seg.start.toFixed(2)} ${unitLabel(unit)}</span>`;
+}
+function idleTooltip(seg, unit){
+  return `<b>Idle</b><br>Time: ${absClockLabel(seg.start, unit)}<br><span class="tt-muted">Duration: ${seg.duration.toFixed(3)} ${unitLabel(unit)} · start ${seg.start.toFixed(2)} ${unitLabel(unit)}</span>`;
+}
+function offShiftTooltip(seg, unit){
+  // v6: this line simply wasn't scheduled to run at all, per the
+  // workbook's Shifts sheet — distinct from a genuine "idle" gap on an
+  // on-shift line (see production_status_at()'s docstring on the
+  // backend). Mirrors idleTooltip's shape.
+  return `<b>Off-shift</b><br>Line not scheduled to run<br>Time: ${absClockLabel(seg.start, unit)}<br><span class="tt-muted">Duration: ${seg.duration.toFixed(3)} ${unitLabel(unit)} · start ${seg.start.toFixed(2)} ${unitLabel(unit)}</span>`;
+}
+// True for any segment type that is a shared-resource / non-job state —
+// i.e. not attributable to one production class (pull vs push) and
+// therefore never dropped by a classFilter. Centralized here so the
+// "is this a job segment" check in renderGanttInto stays in sync with
+// the actual set of non-job types as off-shift is added alongside
+// idle/setup.
+function isNonJobSegType(t){
+  return t === 'idle' || t === 'setup' || t === 'off_shift' || t === 'off-shift';
+}
+function otherTooltip(seg, unit, otherLabel){
+  return `<b>${otherLabel}</b><br>${seg.sachnummer? 'Product: '+escapeHtml(seg.sachnummer)+'<br>':''}`+
+    `<span class="tt-muted">Duration: ${seg.duration.toFixed(3)} ${unitLabel(unit)} · start ${seg.start.toFixed(2)} ${unitLabel(unit)}</span>`;
+}
+
+/* =========================================================================
+   Top-level / sub-tab switching
+   ========================================================================= */
+function switchTopTab(name){
+  activeTopTab = name;
+  document.querySelectorAll('.tabs .tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  document.getElementById('top-all').style.display = name==='all' ? '' : 'none';
+  document.getElementById('top-pull').style.display = name==='pull' ? '' : 'none';
+  document.getElementById('top-push').style.display = name==='push' ? '' : 'none';
+}
+function switchSubTab(top, sub){
+  document.querySelectorAll(`#top-${top} .subtab`).forEach(t=>t.classList.toggle('active', t.dataset.sub===`${top}-${sub}`));
+  document.querySelectorAll(`#top-${top} .sub-panel`).forEach(p=>p.style.display='none');
+  document.getElementById(`sub-${top}-${sub}`).style.display='';
+}
+
+/* =========================================================================
+   Movement Simulation hand-off
+   ------------------------------------------------------------------------
+   Opens movement_simulation.html in a NEW tab (never replaces this page).
+   That page never re-simulates -- it just reads the LAST run cached
+   server-side in _LAST_MIXED_KENV via api_server_mixed.py's new
+   /api/mixed/part_trace, /api/mixed/card_ids, /api/mixed/card_trace
+   endpoints, so the only thing worth handing off here is enough context
+   to pre-fill its sidebar: which API server to talk to, and (best-effort)
+   which class/day the person was already looking at.
+   ========================================================================= */
+function openMovementSimulation(event){
+  event.preventDefault();
+  if(!lastResult){
+    return false; // link is visually disabled until a run exists, but guard anyway
+  }
+  const params = new URLSearchParams();
+  params.set('api_base', document.getElementById('apiBaseInput').value.replace(/\/+$/,''));
+
+  // activeTopTab is 'all' | 'pull' | 'push'. The movement page's mode is
+  // only push|kanban (a cls filter on the one shared run -- see
+  // api_server_mixed.py) -- 'all' has no single equivalent, so leave mode
+  // unset and let the person pick on the movement page in that case.
+  if(activeTopTab === 'pull') params.set('mode', 'kanban');
+  if(activeTopTab === 'push') params.set('mode', 'push');
+
+  // Best-effort day carry-over: use whichever gantt panel matches the
+  // active top tab. dayTabState holds 'full' or a 1-BASED day number;
+  // the movement page's day_index is 0-based, and 'full' has no single
+  // day to hand off, so only pass it through when a specific day is
+  // selected.
+  const dayKey = `${activeTopTab}-gantt`;
+  const day = dayTabState[dayKey];
+  if(day && day !== 'full'){
+    params.set('day_index', String(parseInt(day, 10) - 1));
+  }
+
+  window.open(`movement_simulation.html?${params}`, '_blank', 'noopener');
+  return false;
+}
+
+/* =========================================================================
+   API calls
+   ========================================================================= */
+async function checkHealth(){
+  API_BASE = document.getElementById('apiBaseInput').value.replace(/\/+$/,'');
+  setStatus('pending','Connecting to API…');
+  try{
+    const res = await fetch(`${API_BASE}/api/health`);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    setStatus('ok', `Connected · lines: ${data.lines.join(', ')}`);
+    loadPushPolicy();
+  }catch(e){
+    setStatus('bad', 'API unreachable — check base URL / CORS / server');
+  }
+}
+
+/* =========================================================================
+   Push policy — sidebar settings panel (GET/PATCH /api/mixed/push_policy)
+   ========================================================================= */
+function pushPolicyFieldIds(){
+  return {
+    frozen_zone_cards: 'ppFrozenZoneCards',
+    card_production_time_min: 'ppCardProdTimeMin',
+    push_visibility_days: 'ppVisibilityDays',
+    ideal_lead_time_h: 'ppIdealLeadH',
+    max_lead_time_h: 'ppMaxLeadH',
+    rush_threshold_h: 'ppRushThresholdH',
+    retry_interval_h: 'ppRetryIntervalH',
+  };
+}
+function setPushPolicyStatus(state, text){
+  const el = document.getElementById('ppStatus');
+  if(!el) return;
+  el.className = 'policy-status ' + state;
+  el.textContent = text;
+}
+function populatePushPolicyForm(policy){
+  if(!policy) return;
+  const ids = pushPolicyFieldIds();
+  Object.entries(ids).forEach(([key, id])=>{
+    const el = document.getElementById(id);
+    if(el && policy[key] != null) el.value = policy[key];
+  });
+  const hoursHint = document.getElementById('ppFrozenZoneHoursHint');
+  if(hoursHint){
+    hoursHint.textContent = policy.frozen_zone_hours != null
+      ? `≈ ${policy.frozen_zone_hours.toFixed(2)} h at current card time`
+      : '≈ — h at current card time';
+  }
+  setPushPolicyStatus(
+    policy.live ? 'ok' : 'pending',
+    policy.live ? 'Live values from the active run.' : 'Defaults — run a simulation to make these live (or edit and save once one is running).',
+  );
+}
+async function loadPushPolicy(){
+  try{
+    const res = await fetch(`${API_BASE}/api/mixed/push_policy`);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    populatePushPolicyForm(await res.json());
+  }catch(e){
+    setPushPolicyStatus('bad', 'Could not load push policy — check API connection.');
+  }
+}
+async function savePushPolicy(){
+  API_BASE = document.getElementById('apiBaseInput').value.replace(/\/+$/,'');
+  const ids = pushPolicyFieldIds();
+  const body = {};
+  Object.entries(ids).forEach(([key, id])=>{
+    const el = document.getElementById(id);
+    if(el && el.value !== '') body[key] = parseFloat(el.value);
+  });
+  const btn = document.getElementById('ppSaveBtn');
+  btn.disabled = true;
+  setPushPolicyStatus('pending', 'Saving…');
+  try{
+    const res = await fetch(`${API_BASE}/api/mixed/push_policy`, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    populatePushPolicyForm(data);
+    setPushPolicyStatus('ok', 'Saved. frozen_zone_cards re-synced immediately; visibility/max-lead changes only affect orders that haven\u2019t started their wait yet — see backend docs.');
+  }catch(e){
+    setPushPolicyStatus('bad', 'Save failed: ' + e.message);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function runMixedSimulation(){
+  API_BASE = document.getElementById('apiBaseInput').value.replace(/\/+$/,'');
+  const btn = document.getElementById('runBtn');
+  const label = document.getElementById('runBtnLabel');
+  btn.disabled = true;
+  label.innerHTML = '<span class="spinner"></span> Running…';
+  clearError();
+
+  const horizonRaw = document.getElementById('inHorizon').value;
+  const body = {
+    n_workers: parseInt(document.getElementById('inWorkers').value, 10),
+    seed: parseInt(document.getElementById('inSeed').value, 10) || 42,
+    day_start_hour: parseInt(document.getElementById('inDayStartHour').value, 10) || 6,
+    push_chunk_size: parseInt(document.getElementById('inChunkSize').value, 10) || 50,
+    horizon_s: horizonRaw === '' ? null : parseFloat(horizonRaw) * 3600.0,
+    time_unit: 'h',
+  };
+
+  try{
+    const res = await fetch(`${API_BASE}/api/simulate_mixed`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    onSimulateComplete(data);
+  }catch(e){
+    showError('Mixed simulation failed: ' + e.message);
+  }finally{
+    btn.disabled = false;
+    label.textContent = 'Run Mixed Simulation';
+  }
+}
+
+/* =========================================================================
+   Top-level render
+   ========================================================================= */
+function onSimulateComplete(data){
+  lastResult = data;
+
+  const movementLink = document.getElementById('movementLink');
+  movementLink.style.opacity = '1';
+  movementLink.style.pointerEvents = 'auto';
+
+  renderStatStrip(data.summary);
+  renderRunSummary(data.summary);
+
+  // Reset time-range tabs to "Full span" for a fresh run.
+  Object.keys(dayTabState).forEach(k => dayTabState[k] = 'full');
+
+  // All Production
+  renderAllGanttPanel();
+  renderAllKpiPanel();
+  renderGateStatus(data.gate_status);
+  loadSupermarketState();
+
+  // Kanban (Pull)
+  renderPullGanttPanel();
+  renderPullKpiPanel();
+  renderCardFlowChart(data.card_flow);
+  renderShortfallChart(data.card_flow);
+  renderLineUnitsSelect(data.line_units_series);
+  renderLineUnitsCharts();
+  renderRestmengeStrip(data.restmenge);
+
+  // Push
+  renderPushGanttPanel();
+  renderPushKpiPanel();
+  renderPushDeliveryPanel(data);
+  renderPushIssuesPanel(data);
+
+  // Push policy panel reflects whatever the just-completed run is
+  // actually using (ctx.policy) — may differ from the sidebar's current
+  // field values if this run used defaults or a policy edited by another
+  // client/tab.
+  populatePushPolicyForm(data.push_policy);
+
+  document.getElementById('mainSubtitle').textContent =
+    `${data.summary.n_workers}MA · seed ${data.summary.seed} · sim end ${data.summary.sim_end_h.toFixed(2)}h / `+
+    `horizon ${data.summary.horizon_h.toFixed(2)}h · ${data.summary.n_kanban_products} pull SKUs · ${data.summary.n_push_products} push SKUs`;
+}
+
+function renderStatStrip(summary){
+  const strip = document.getElementById('statStrip');
+  strip.style.display = 'grid';
+  strip.innerHTML = `
+    <div class="stat-card"><div class="label">Sim end</div><div class="value">${summary.sim_end_h.toFixed(2)} h</div></div>
+    <div class="stat-card"><div class="label">Horizon</div><div class="value">${summary.horizon_h.toFixed(2)} h</div></div>
+    <div class="stat-card"><div class="label">Cards tracked</div><div class="value">${summary.cards_tracked}</div></div>
+    <div class="stat-card"><div class="label">Workers</div><div class="value">${summary.n_workers}MA</div></div>
+    <div class="stat-card"><div class="label">Seed</div><div class="value">${summary.seed}</div></div>
+    <div class="stat-card"><div class="label">Wall time</div><div class="value">${summary.wall_time_s.toFixed(2)}<span style="font-size:11px;color:var(--text-faint);font-weight:600;"> s</span></div></div>
+  `;
+}
+
+function renderRunSummary(summary){
+  document.getElementById('cardRun').style.display = '';
+  const rows = [
+    ['Workers', summary.n_workers + 'MA'],
+    ['Seed', summary.seed],
+    ['Day start hour', summary.day_start_hour + ':00'],
+    ['Push chunk size', summary.push_chunk_size],
+    ['Horizon', summary.horizon_h.toFixed(2) + ' h'],
+    ['Sim end', summary.sim_end_h.toFixed(2) + ' h'],
+    ['Wall time', summary.wall_time_s.toFixed(2) + ' s'],
+    ['Cards tracked', summary.cards_tracked],
+    ['Pull / Push SKUs', summary.n_kanban_products + ' / ' + summary.n_push_products],
+  ];
+  document.getElementById('runSummaryBody').innerHTML =
+    rows.map(([k,v])=>`<div class="run-summary-row"><span>${k}</span><span>${escapeHtml(String(v))}</span></div>`).join('');
+}
+
+/* =========================================================================
+   Gantt (shared renderer, with optional production-type filter)
+   classFilter == null            -> render every segment as-is (All Production view)
+   classFilter == 'pull'|'push'   -> job segments are filtered by seg.simClass
+                        ("pull" = class-1/Kanban, "push" = class-2/push — the
+                        tag mixed_runner.py writes onto each ScheduleEvent
+                        post-hoc based on which gated call produced it, see
+                        that module's "Event-log class tagging" docstring).
+                        Non-matching job segments are DROPPED, not greyed
+                        out, so the Kanban/Push tabs render exactly like
+                        All Production (same colors, same labels) but only
+                        show what that production method actually made.
+                        Idle/setup segments are shared-resource states, not
+                        attributable to one class, so they always show.
+                        NOTE: this is deliberately NOT seg.productClass —
+                        that field is the product's own type/category, not
+                        which production method (pull vs push) made it;
+                        conflating the two was the previous bug here.
+   ========================================================================= */
+// windowRange == null      -> full-span view: zoomed to a fixed px-per-day scale
+//                             (so ~2–2.5 days are visible at once) with horizontal scroll.
+// windowRange == {start,end} in gantt.time_unit units -> a single day's slice,
+//                             segments clipped to the window and stretched to fill the panel.
+function segSimClass(seg){
+  // "pull"/"push" per mixed_runner.py's ScheduleEvent.sim_class tagging.
+  // Checked under a couple of likely JSON key casings since the exact
+  // serialization in schedule_events.py isn't visible from the frontend.
+  return seg.simClass ?? seg.sim_class ?? seg.production_class ?? null;
+}
+function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange){
+  if(!gantt || !gantt.lines || !gantt.lines.length){
+    document.getElementById(containerId).innerHTML = '<div class="empty-state"><p>No gantt data.</p></div>';
+    return;
+  }
+  const legend = document.getElementById(legendId);
+  if(legend){
+    // Off-shift only gets its own legend entry when this gantt actually
+    // contains at least one such segment — older/shift-less workbooks
+    // never produce them, so the legend stays exactly as before for them.
+    const hasOffShift = gantt.lines.some(line =>
+      (gantt.schedule[line] || []).some(seg => seg.type === 'off_shift' || seg.type === 'off-shift'));
+    legend.innerHTML = `
+      <div class="legend-item"><span class="legend-swatch setup"></span>Changeover</div>
+      <div class="legend-item"><span class="legend-swatch idle"></span>Idle</div>
+      ${hasOffShift ? '<div class="legend-item"><span class="legend-swatch off-shift"></span>Off-shift</div>' : ''}`;
+  }
+
+  const fullHorizon = gantt.horizon || 1;
+  const winStart = windowRange ? windowRange.start : 0;
+  const winEnd = windowRange ? windowRange.end : fullHorizon;
+  const horizon = Math.max(winEnd - winStart, 1e-6);
+  const isFullSpan = !windowRange;
+  const dayStartHour = getDayStartHour();
+  const dayLenAbs = dayLengthFor(gantt.time_unit); // e.g. 24 for 'h'
+
+  // Full span: fixed 8h-of-day ticks. Single-day slice: a "nice" step,
+  // same as before — both are now labelled with actual clock time.
+  const step = isFullSpan ? (dayLenAbs / 24) * 8 : niceTickStep(horizon, 8);
+  const nTicks = Math.ceil(horizon / step);
+
+  let axisHtml = `<div class="gantt-axis">`;
+  for(let i=0;i<=nTicks;i++){
+    const t = i*step;
+    if(t > horizon + 1e-9) break;
+    const absHour = dayStartHour + elapsedToHours(winStart + t, gantt.time_unit);
+    axisHtml += `<span style="left:${(t/horizon)*100}%">${formatClockTime(absHour)}</span>`;
+  }
+  axisHtml += `</div>`;
+
+  // Full span only: a second row under the chart marking where each new
+  // calendar day begins (Day N / DD.MM.YYYY), aligned to the same x-axis.
+  let dayMarkersHtml = '';
+  if(isFullSpan){
+    const nDaysFull = dayCountFor(fullHorizon, gantt.time_unit);
+    let markers = '';
+    for(let d=1; d<=nDaysFull; d++){
+      const t = (d-1) * dayLenAbs;
+      if(t > horizon + 1e-9) break;
+      const leftPct = (t / horizon) * 100;
+      markers += `<div class="gantt-daymarker" style="left:${leftPct}%">
+        <div class="gantt-daymarker-tick"></div>
+        <div class="gantt-daymarker-label">Day ${d} / ${dateForDay(d)}</div>
+      </div>`;
+    }
+    dayMarkersHtml = `<div class="gantt-daymarkers">${markers}</div>`;
+  }
+
+  // Sanity check: if we're filtering by production type but NONE of this
+  // gantt's job segments carry a resolvable sim class anywhere, the field
+  // name guessed in segSimClass() probably doesn't match the real payload —
+  // warn instead of silently rendering an empty/misleading view again.
+  let sawAnyJob = false, sawAnyClass = false;
+  if(classFilter != null){
+    gantt.lines.forEach(line => (gantt.schedule[line] || []).forEach(seg => {
+      if(!isNonJobSegType(seg.type)){
+        sawAnyJob = true;
+        if(segSimClass(seg) != null) sawAnyClass = true;
+      }
+    }));
+  }
+  if(classFilter != null && sawAnyJob && !sawAnyClass){
+    document.getElementById(containerId).innerHTML =
+      `<div class="empty-state"><p><b>Can't tell pull from push here.</b><br>None of this run's job segments carry a recognizable production-type field (checked <code>simClass</code> / <code>sim_class</code> / <code>production_class</code>). Check what key <code>schedule_events.build_gantt_payload</code> actually puts on each segment for the pull/push tag and update <code>segSimClass()</code> to match.</p></div>`;
+    return;
+  }
+
+  // Shift-boundary lines (6am / 2pm / 10pm) — same on every row, computed
+  // once. Slightly thicker/darker than the regular tick gridlines so the
+  // shift divisions read at a glance without any text label.
+  let shiftLinesHtml = '';
+  shiftBoundaryTimes(winStart, winEnd, gantt.time_unit).forEach(st=>{
+    const t = st - winStart;
+    if(t < 1e-9 || t > horizon - 1e-9) return; // skip lines that land exactly on an edge
+    shiftLinesHtml += `<div class="gantt-shiftline" style="left:${(t/horizon)*100}%"></div>`;
+  });
+
+  let rowsHtml = '';
+  gantt.lines.forEach(line=>{
+    const segs = gantt.schedule[line] || [];
+    let gridHtml = '';
+    for(let i=0;i<=nTicks;i++){
+      const t = i*step;
+      if(t > horizon + 1e-9) break;
+      gridHtml += `<div class="gantt-gridline" style="left:${(t/horizon)*100}%"></div>`;
+    }
+    gridHtml += shiftLinesHtml;
+
+    // Only segments that actually overlap the visible window, clipped to
+    // the window edges; job segments belonging to the OTHER production
+    // method are dropped entirely (not greyed) when a classFilter is set.
+    const visibleSegs = segs.filter(seg => {
+      const overlaps = (seg.start + seg.duration) > winStart + 1e-9 && seg.start < winEnd - 1e-9;
+      if(!overlaps) return false;
+      if(classFilter != null && !isNonJobSegType(seg.type) && segSimClass(seg) !== classFilter) return false;
+      return true;
+    });
+
+    const segHtml = visibleSegs.map(seg=>{
+      const clipStart = Math.max(seg.start, winStart);
+      const clipEnd = Math.min(seg.start + seg.duration, winEnd);
+      const leftPct = ((clipStart - winStart)/horizon)*100;
+      const widthPct = Math.max(((clipEnd - clipStart)/horizon)*100, 0.15);
+
+      if(seg.type === 'off_shift' || seg.type === 'off-shift'){
+        // v6: line wasn't scheduled to run at all per the workbook's
+        // Shifts sheet — kept visually distinct from a genuine "idle"
+        // gap on an on-shift line (production_status_at()'s "off_shift"
+        // vs "idle" states, mirrored here).
+        return `<div class="gantt-seg off-shift" style="left:${leftPct}%;width:${widthPct}%"
+          onmouseenter="showTooltip(event, ${JSON.stringify(offShiftTooltip(seg, gantt.time_unit)).replace(/"/g,'&quot;')})"
+          onmouseleave="hideTooltip()"></div>`;
+      }
+      if(seg.type === 'idle'){
+        return `<div class="gantt-seg idle" style="left:${leftPct}%;width:${widthPct}%"
+          onmouseenter="showTooltip(event, ${JSON.stringify(idleTooltip(seg, gantt.time_unit)).replace(/"/g,'&quot;')})"
+          onmouseleave="hideTooltip()"></div>`;
+      }
+      if(seg.type === 'setup'){
+        const label = widthPct > 6 ? `<span class="seg-text">setup</span>` : '';
+        return `<div class="gantt-seg setup" style="left:${leftPct}%;width:${widthPct}%"
+          onmouseenter="showTooltip(event, ${JSON.stringify(setupTooltip(seg, gantt.time_unit)).replace(/"/g,'&quot;')})"
+          onmouseleave="hideTooltip()">${label}</div>`;
+      }
+      const bg = colorForSku(seg.sachnummer);
+      let inner = '';
+      if(widthPct > 14){
+        inner = `<span class="seg-text">${escapeHtml(seg.sachnummer||'')} <span class="seg-rate">· ${seg.rate!=null? seg.rate.toFixed(0)+'/h':''}</span></span>`;
+      }else if(widthPct > 5){
+        inner = `<span class="seg-text">${seg.rate!=null? seg.rate.toFixed(0):''}</span>`;
+      }
+      return `<div class="gantt-seg job" style="left:${leftPct}%;width:${widthPct}%;background:${bg}"
+        onmouseenter="showTooltip(event, ${JSON.stringify(jobTooltip(seg, gantt.time_unit)).replace(/"/g,'&quot;')})"
+        onmouseleave="hideTooltip()">${inner}</div>`;
+    }).join('');
+
+    rowsHtml += `
+      <div class="gantt-row">
+        <div class="gantt-row-label">${escapeHtml(line)}</div>
+        <div class="gantt-track">${gridHtml}${segHtml}</div>
+      </div>`;
+  });
+
+  // Zoom only applies to the full-span view: give .gantt an explicit pixel
+  // width scaled to the horizon so roughly 2–2.5 days show at once, and let
+  // .gantt-wrap's overflow-x:auto handle the rest via horizontal scrolling.
+  // A single-day slice instead fills the panel width responsively.
+  let widthStyle = '';
+  if(!windowRange){
+    const totalDays = fullHorizon / dayLengthFor(gantt.time_unit);
+    const pxWidth = Math.max(760, Math.round(totalDays * GANTT_PX_PER_DAY));
+    widthStyle = ` style="width:${pxWidth}px;min-width:${pxWidth}px;"`;
+  }
+
+  document.getElementById(containerId).innerHTML =
+    `<div class="gantt-wrap"><div class="gantt"${widthStyle}>${axisHtml}${rowsHtml}${dayMarkersHtml}</div></div>`;
+}
+
+/* ---- Panel wrappers: render day tabs + dispatch to renderGanttInto with the right window ---- */
+function renderGanttPanel(key, containerId, legendId, gantt, classFilter){
+  if(!gantt || !gantt.lines || !gantt.lines.length){
+    document.getElementById(containerId).innerHTML = '<div class="empty-state"><p>No gantt data.</p></div>';
+    const el = document.getElementById('daytabs-' + key); if(el) el.innerHTML = '';
+    return;
+  }
+  renderDayTabs(key, gantt.horizon, gantt.time_unit);
+  const day = dayTabState[key] || 'full';
+  const windowRange = (day === 'full') ? null : dayWindowFor(day, gantt.time_unit, gantt.horizon);
+  renderGanttInto(containerId, legendId, gantt, classFilter, windowRange);
+}
+function renderAllGanttPanel(){
+  if(!lastResult) return;
+  renderGanttPanel('all-gantt', 'allGanttContainer', 'allLegend', lastResult.gantt, null);
+}
+function renderPullGanttPanel(){
+  if(!lastResult) return;
+  renderGanttPanel('pull-gantt', 'pullGanttContainer', 'pullLegend', lastResult.gantt, 'pull');
+}
+function renderPushGanttPanel(){
+  if(!lastResult) return;
+  renderGanttPanel('push-gantt', 'pushGanttContainer', 'pushLegend', lastResult.gantt, 'push');
+}
+
+/* ---- Panel wrappers: KPI tabs. The API has no per-day breakdown, so the
+   day tabs here just toggle the "aggregated over the whole run" note —
+   see the note-banner in each KPI sub-panel. ---- */
+function renderKpiDayTabs(key, noteId){
+  if(!lastResult || !lastResult.gantt) return;
+  renderDayTabs(key, lastResult.gantt.horizon, lastResult.gantt.time_unit);
+  const day = dayTabState[key] || 'full';
+  const note = document.getElementById(noteId);
+  if(note) note.style.display = (day === 'full') ? 'none' : '';
+}
+function renderAllKpiPanel(){
+  if(!lastResult) return;
+  renderKpiDayTabs('all-kpi', 'allKpiDayNote');
+  renderKpiByLine(lastResult.kpi_by_line);
+}
+function renderPullKpiPanel(){
+  if(!lastResult) return;
+  renderKpiDayTabs('pull-kpi', 'pullKpiDayNote');
+  renderKpiByClass('pullKpiContainer', lastResult.kpi_by_class, 'pull');
+}
+function renderPushKpiPanel(){
+  if(!lastResult) return;
+  renderKpiDayTabs('push-kpi', 'pushKpiDayNote');
+  renderKpiByClass('pushKpiContainer', lastResult.kpi_by_class, 'push');
+}
+
+/* =========================================================================
+   KPI tables
+   ========================================================================= */
+function renderKpiByLine(kpiByLine){
+  const container = document.getElementById('allKpiContainer');
+  const lines = Object.values(kpiByLine || {});
+  if(!lines.length){ container.innerHTML = '<div class="empty-state"><p>No KPI data.</p></div>'; return; }
+  container.innerHTML = `<div class="kpi-grid">` + lines.map(k=>{
+    const utilRows = Object.entries(k.station_utilisation || {}).map(([name, rho])=>`
+      <div class="util-row"><div class="util-label"><span>${escapeHtml(name)}</span><span>${(rho*100).toFixed(1)}%</span></div>
+      <div class="util-bar"><div style="width:${Math.min(rho*100,100)}%"></div></div></div>`).join('');
+    const bufferRows = Object.entries(k.buffer_max_fill || {}).map(([bid, pair])=>`
+      <div class="row"><span>${escapeHtml(bid)}</span><span>${pair[0]}/${pair[1]}</span></div>`).join('');
+    return `
+      <div class="kpi-line-card">
+        <h3>${escapeHtml(k.line_name)}</h3>
+        <div class="row"><span>Passed</span><span>${k.passed}</span></div>
+        <div class="row"><span>Scrapped</span><span>${k.scrapped}</span></div>
+        <div class="row"><span>Reworked</span><span>${k.reworked}</span></div>
+        <div class="row"><span>Total created</span><span>${k.total_created}</span></div>
+        <div class="row"><span>Mean cycle time</span><span>${k.mean_cycle_time_s!=null? k.mean_cycle_time_s.toFixed(1)+' s':'—'}</span></div>
+        <div style="margin-top:10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--text-faint);">Station utilisation</div>
+        ${utilRows || '<div class="hint">No station data.</div>'}
+        <div style="margin-top:10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--text-faint);">Buffer max fill</div>
+        ${bufferRows || '<div class="hint">No buffer data.</div>'}
+      </div>`;
+  }).join('') + `</div>`;
+}
+
+function renderKpiByClass(containerId, kpiByClass, clsKey){
+  const container = document.getElementById(containerId);
+  const entries = Object.entries(kpiByClass || {});
+  if(!entries.length){ container.innerHTML = '<div class="empty-state"><p>No KPI data.</p></div>'; return; }
+  const badgeClass = clsKey === 'pull' ? 'pull' : 'push';
+  container.innerHTML = `<div class="kpi-grid">` + entries.map(([lineName, cls])=>{
+    const k = cls[clsKey] || {};
+    return `
+      <div class="kpi-line-card">
+        <h3>${escapeHtml(lineName)}<span class="class-badge ${badgeClass}">${clsKey}</span></h3>
+        <div class="row"><span>Passed</span><span>${k.passed ?? 0}</span></div>
+        <div class="row"><span>Scrapped</span><span>${k.scrapped ?? 0}</span></div>
+        <div class="row"><span>Reworked</span><span>${k.reworked ?? 0}</span></div>
+        <div class="row"><span>Mean cycle time</span><span>${k.mean_cycle_time_s!=null? k.mean_cycle_time_s.toFixed(1)+' s':'—'}</span></div>
+        <div class="row"><span>Unclassified on line</span><span>${cls.unclassified_count ?? 0}</span></div>
+      </div>`;
+  }).join('') + `</div>`;
+}
+
+/* =========================================================================
+   Gate status
+   ========================================================================= */
+function renderGateStatus(gateStatus){
+  const container = document.getElementById('gateContainer');
+  const entries = Object.entries(gateStatus || {});
+  if(!entries.length){ container.innerHTML = '<div class="empty-state"><p>No gate data.</p></div>'; return; }
+  container.innerHTML = `<div class="gate-grid">` + entries.map(([lineName, g])=>{
+    const cls = g.current_class;
+    const badge = cls === 'pull' ? '<span class="class-badge pull">pull</span>'
+      : cls === 'push' ? '<span class="class-badge push">push</span>'
+      : cls === 'unclassified' ? '<span class="class-badge" style="background:#F1F3F6;color:var(--text-faint);">unclassified</span>'
+      : '';
+    // v6: live "is this line on-shift right now" snapshot
+    // (gate_status[line].is_on_shift) — only rendered as an off-shift
+    // badge when explicitly false, so a pre-v6/shift-less run (where the
+    // backend always reports true) looks exactly as before.
+    const offShiftBadge = g.is_on_shift === false
+      ? '<span class="class-badge" style="background:#EEF0F3;color:#8A93A0;">off-shift</span>' : '';
+    return `
+    <div class="gate-card">
+      <h4>${escapeHtml(lineName)}${badge}${offShiftBadge}</h4>
+      <div class="row"><span>Currently set up</span><span>${g.current_rec ? escapeHtml(g.current_rec) : '—'}</span></div>
+      <div class="row"><span>Last activity</span><span>${g.last_activity_h!=null? g.last_activity_h.toFixed(2)+' h':'—'}</span></div>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+/* =========================================================================
+   Supermarket state (All Production tab) — GET /api/mixed/supermarket_state
+   One line selected at a time (smLineTabs pill row) — one small chart
+   PER PHYSICAL ROW (no stacking together), colored by Pull vs Push (same
+   purple/blue convention as the Gantt class-badges). The legend only
+   lists products that actually have stock, on the SELECTED line, within
+   the SELECTED day window. Restmenge stays one stacked-by-product chart,
+   same as before, just scoped to the selected line.
+   ========================================================================= */
+let lastSupermarketStateData = null; // GET /api/mixed/supermarket_state payload
+let allSmSelectedLine = null;        // currently selected line_name
+
+async function loadSupermarketState(){
+  const container = document.getElementById('supermarketStateContainer');
+  try{
+    const res = await fetch(`${API_BASE}/api/mixed/supermarket_state?time_unit=h`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    lastSupermarketStateData = data;
+    renderAllSupermarketPanel();
+  }catch(e){
+    container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><h3>Couldn't load Supermarket state</h3><p>${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function renderSmLineTabs(lines){
+  const el = document.getElementById('smLineTabs');
+  if(!el) return;
+  if(!lines.length){ el.innerHTML=''; return; }
+  if(!allSmSelectedLine || !lines.some(l=>l.line_name===allSmSelectedLine)) allSmSelectedLine = lines[0].line_name;
+  el.innerHTML = `<span class="daytabs-label">Line</span>` +
+    lines.map(l => `<button class="daytab ${l.line_name===allSmSelectedLine?'active':''}" onclick='setSmLine(${JSON.stringify(l.line_name)})'>${escapeHtml(l.line_name)}</button>`).join('');
+}
+function setSmLine(name){
+  allSmSelectedLine = name;
+  renderAllSupermarketPanel();
+}
+
+function smFillPct(n, capacity){
+  if(!capacity) return 0;
+  return Math.max(0, Math.min(100, Math.round(100 * n / capacity)));
+}
+function smFillCell(n, capacity, exoticStyle){
+  const pct = smFillPct(n, capacity);
+  const emptyCls = n<=0 ? ' empty' : '';
+  const barCls = exoticStyle ? 'exotic' : '';
+  return `<div class="sm-fill-cell">
+    <div class="sm-fillbar ${barCls}${emptyCls}"><div style="width:${pct}%;"></div></div>
+    <span class="pct">${n}/${capacity}</span>
+  </div>`;
+}
+
+// Combines one line's physical rows + exotic-routed (no-row) products
+// into ONE flat list of "row defs", each tagged Pull or Push: Main-runner
+// rows and exotic-routed Kanban products are Pull; physical Exotic rows
+// are Push (they're only ever filled by push chunks — see mixed_runner.
+// _deposit_push_chunk_to_supermarket — a Kanban-eligible product with no
+// Main-runner row still draws from a synthetic PULL-side store, never
+// from these physical Exotic slots, despite the "routed via Exotic pool"
+// business framing; see entities_resources_v5.SupermarketResource.
+// is_exotic_routed's docstring).
+function buildSmRowDefs(line){
+  const rows = [...line.rows].sort((a,b)=>a.row_number-b.row_number).map(r => ({
+    chartTitle: r.is_exotic ? `Row ${r.row_number} · Exotic` : `Row ${r.row_number} · ${r.sachnummer}`,
+    kind: r.is_exotic ? 'push' : 'pull',
+    typeLabel: r.is_exotic ? 'Exotic' : 'Main runner',
+    row_number: r.row_number,
+    capacity: r.capacity,
+    is_exotic: r.is_exotic,
+    product: r.is_exotic ? null : r.sachnummer,
+    series: r.series,
+  }));
+  const routed = (line.exotic_routed_products||[]).map(p => ({
+    chartTitle: `${p.sachnummer} · Exotic pool (no row)`,
+    kind: 'pull',
+    typeLabel: 'Exotic pool (no row)',
+    row_number: null,
+    capacity: p.capacity,
+    is_exotic: false,
+    product: p.sachnummer,
+    series: p.series,
+  }));
+  return [...rows, ...routed];
+}
+
+// Distinct products with stock (n_cards > 0) at some point within
+// [win.start, win.end], tagged Pull/Push. Physical Exotic rows can hold
+// different occupants at different times, so this reads each series
+// point's own `sachnummer` rather than a fixed product; Pull rows/
+// products have a fixed product name throughout.
+// Resolves whether one row def has ANY stock within [win.start, win.end],
+// and (for Exotic rows, whose occupant can change over time) which
+// product it was most-recently holding in that window — used both to
+// filter out empty/never-produced rows and to color each row's chart by
+// product. Pull rows/products (fixed product) just report their own
+// product when active.
+function smRowActivity(rd, win){
+  let active = false, product = rd.product || null;
+  (rd.series||[]).forEach(pt => {
+    if(pt.t < win.start - 1e-9 || pt.t > win.end + 1e-9) return;
+    if(rd.is_exotic){
+      if(pt.sachnummer && pt.n_cards > 0){ active = true; product = pt.sachnummer; }
+    } else if(pt.n_cards > 0){
+      active = true;
+    }
+  });
+  return {active, product};
+}
+
+function renderAllSupermarketRowTable(line){
+  const rows = [...line.rows].sort((a,b)=>a.row_number-b.row_number);
+  const routed = line.exotic_routed_products || [];
+  const rowsHtml = rows.map(r => {
+    const last = r.series && r.series.length ? r.series[r.series.length-1] : null;
+    if(r.is_exotic){
+      const occupant = last && last.sachnummer;
+      return `<tr>
+        <td>${r.row_number}</td>
+        <td><span class="sm-row-type-badge exotic">Exotic</span></td>
+        <td>${occupant ? escapeHtml(occupant) : '<span class="sm-empty-slot">empty / any product</span>'}</td>
+        <td class="num">${r.capacity}</td>
+        <td>${smFillCell(last ? last.n_cards : 0, r.capacity, true)}</td>
+        <td class="num">—</td>
+      </tr>`;
+    }
+    const n = last ? last.n_cards : 0;
+    const pcsPartial = last ? last.pcs_partial : 0;
+    const sharedNote = r.shared_rows && r.shared_rows.length>1
+      ? `<div class="sm-shared-note">shared logical store · rows ${r.shared_rows.join(', ')} · group ${last?last.group_n_available:0}/${r.group_capacity}</div>`
+      : '';
+    return `<tr>
+      <td>${r.row_number}</td>
+      <td><span class="sm-row-type-badge main">Main runner</span></td>
+      <td>${escapeHtml(r.sachnummer)}${sharedNote}</td>
+      <td class="num">${r.capacity}</td>
+      <td>${smFillCell(n, r.capacity, false)}</td>
+      <td class="num">${pcsPartial>0 ? pcsPartial + (r.batch_size? ' / '+r.batch_size:'') : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const routedHtml = routed.length ? `
+    <div class="sm-routed-banner">
+      <b>${routed.length}</b> Kanban product${routed.length===1?'':'s'} on ${escapeHtml(line.line_name)} ${routed.length===1?'has':'have'} no dedicated Main-runner row and ${routed.length===1?'is':'are'} routed via the shared Exotic pool instead — included below, labeled "no row":
+      <div>${routed.map(p => {
+        const last = p.series && p.series.length ? p.series[p.series.length-1] : null;
+        return `<span class="sm-routed-chip">${escapeHtml(p.sachnummer)} · ${last?last.n_cards:0}/${p.capacity} cards</span>`;
+      }).join('')}</div>
+    </div>` : '';
+
+  return `<div class="table-wrap">
+    <table class="data-table">
+      <thead><tr>
+        <th>Row</th><th>Type</th><th>Product</th><th class="num">Capacity</th><th>Cards (latest)</th><th class="num">Restmenge (pcs)</th>
+      </tr></thead>
+      <tbody>${rowsHtml || '<tr><td colspan="6" class="sm-empty-slot">No rows configured for this line.</td></tr>'}</tbody>
+    </table>
+  </div>${routedHtml}`;
+}
+
+function renderAllSupermarketPanel(){
+  const container = document.getElementById('supermarketStateContainer');
+  const legend = document.getElementById('allSmLegend');
+  const data = lastSupermarketStateData;
+  if(!data || !data.lines || !data.lines.length){
+    container.innerHTML = '<div class="empty-state"><div class="icon">🗄️</div><h3>No Supermarket data</h3><p>This run\'s workbook may not have a "Supermarkets" sheet.</p></div>';
+    document.getElementById('daytabs-all-supermarket').innerHTML = '';
+    document.getElementById('smLineTabs').innerHTML = '';
+    legend.innerHTML = '';
+    return;
+  }
+
+  renderSmLineTabs(data.lines);
+  const line = data.lines.find(l => l.line_name === allSmSelectedLine) || data.lines[0];
+
+  // Day tabs keyed off the overall sim horizon (gantt), same convention
+  // every other panel here uses.
+  const fullHorizon = (lastResult && lastResult.gantt && lastResult.gantt.horizon) || data.horizon || 1;
+  const fullUnit = (lastResult && lastResult.gantt && lastResult.gantt.time_unit) || data.time_unit;
+  renderDayTabs('all-supermarket', fullHorizon, fullUnit);
+  const day = dayTabState['all-supermarket'] || 'full';
+  const win = (day === 'full') ? {start:0, end:fullHorizon} : dayWindowFor(day, fullUnit, fullHorizon);
+  const isFullSpan = day === 'full';
+
+  const rowDefsAll = buildSmRowDefs(line);
+  // Resolve activity + (for Exotic rows) which product per row, THEN drop
+  // anything with no stock in this window entirely — no empty/never-
+  // produced rows or "virtual, no physical row" placeholders cluttering
+  // the charts.
+  const rowDefs = rowDefsAll
+    .map(rd => ({...rd, ...smRowActivity(rd, win)}))
+    .filter(rd => rd.active);
+
+  // Distinct colors per PRODUCT (not per kind) — every row/product gets
+  // its own palette color, while the pull/push badge stays as a separate
+  // text label.
+  const distinctProducts = [...new Set(rowDefs.map(rd => rd.product).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const productColor = {};
+  distinctProducts.forEach((p,i) => { productColor[p] = COLOR_PALETTE[i % COLOR_PALETTE.length]; });
+  const kindByProduct = {};
+  rowDefs.forEach(rd => { if(!(rd.product in kindByProduct)) kindByProduct[rd.product] = rd.kind; });
+
+  // Legend: only products with stock on THIS line, within THIS window.
+  if(!distinctProducts.length){
+    legend.innerHTML = '<span class="sm-empty-slot">No products with stock in this window.</span>';
+  } else {
+    legend.innerHTML = distinctProducts.map(product =>
+      `<div class="legend-item"><span class="legend-swatch" style="background:${productColor[product]}"></span>${escapeHtml(product)}<span class="class-badge ${kindByProduct[product]}">${kindByProduct[product]}</span></div>`
+    ).join('');
+  }
+
+  // One chart PER active physical row / routed product, full width (one
+  // per line so nothing is squeezed two-to-a-row), colored by product.
+  const chartsHtml = rowDefs.length ? rowDefs.map((rd, idx) => {
+    const capNote = rd.row_number != null
+      ? `<span class="cap-note">cap ${rd.capacity}</span>`
+      : `<span class="cap-note">cap ${rd.capacity} · virtual, no physical row</span>`;
+    return `<div class="sm-row-chart-card">
+      <h5><span class="legend-swatch" style="background:${productColor[rd.product]};border-radius:50%;"></span>${escapeHtml(rd.chartTitle)}<span class="class-badge ${rd.kind}">${rd.kind}</span>${capNote}</h5>
+      <div id="allSmRowChart_${idx}"></div>
+    </div>`;
+  }).join('') : '<div class="empty-state"><p>No rows with stock on this line in this window.</p></div>';
+
+  const rmProducts = participatingProducts(line.restmenge_products||[], line.restmenge_series||[]);
+
+  container.innerHTML = `
+    ${renderAllSupermarketRowTable(line)}
+    <h4 style="margin:18px 0 10px;font-size:12.5px;color:var(--text-muted);">Cards on hand — one chart per active physical row</h4>
+    <div class="sm-row-charts-grid">${chartsHtml}</div>
+    <h4 style="margin:22px 0 6px;font-size:12.5px;color:var(--text-muted);">Restmenge (pcs, partial pack) by product</h4>
+    <div id="allSmRmChart"></div>
+  `;
+
+  // Charts drawn after the container HTML exists (needs real DOM nodes).
+  rowDefs.forEach((rd, idx) => {
+    const key = rd.chartTitle;
+    const points = (rd.series||[]).map(pt => ({t: pt.t, [key]: pt.n_cards, total: pt.n_cards}));
+    const color = productColor[rd.product] || 'var(--purple)';
+    drawStackedQuantityChart(`allSmRowChart_${idx}`, points, [key], data.time_unit, win, rd.chartTitle, 'cards', 'Cards', 'Cards', isFullSpan, () => color);
+  });
+  drawStackedQuantityChart('allSmRmChart', line.restmenge_series||[], rmProducts, data.time_unit, win, line.line_name, 'pcs', 'Total Restmenge', 'Pcs', isFullSpan, colorForProduct);
+}
+
+/* =========================================================================
+   Push delivery performance (push_kpi / push_delivery_log)
+   ========================================================================= */
+function formatIsoDateTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return escapeHtml(String(iso));
+  return d.toLocaleString(undefined, {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function renderPushDeliveryPanel(data){
+  const kpi = data && data.push_kpi;
+  const log = (data && data.push_delivery_log) || [];
+  const stripEl = document.getElementById('pushDeliveryStatStrip');
+  const tableEl = document.getElementById('pushDeliveryTableContainer');
+  if(!kpi || !log.length){
+    stripEl.style.display = 'none';
+    tableEl.innerHTML = '<div class="empty-state"><div class="icon">🚚</div><h3>No push deliveries yet</h3><p>Nothing has completed on the push side for this run.</p></div>';
+    return;
+  }
+  stripEl.style.display = 'grid';
+  stripEl.innerHTML = `
+    <div class="stat-card"><div class="label">Delivered</div><div class="value">${kpi.n_delivered}</div></div>
+    <div class="stat-card"><div class="label">On time / early</div><div class="value">${kpi.n_on_time_or_early}</div></div>
+    <div class="stat-card"><div class="label">Late</div><div class="value">${kpi.n_late}</div></div>
+    <div class="stat-card"><div class="label">Rush placements</div><div class="value">${kpi.n_rush}</div></div>
+    <div class="stat-card"><div class="label">Avg delta</div><div class="value">${kpi.avg_delta_h!=null? kpi.avg_delta_h.toFixed(2)+'h':'—'}</div></div>
+    <div class="stat-card"><div class="label">Max late</div><div class="value">${kpi.max_late_h!=null? kpi.max_late_h.toFixed(2)+'h':'—'}</div></div>
+  `;
+
+  const rows = log.slice().sort((a,b)=> new Date(b.delivered_date) - new Date(a.delivered_date));
+  tableEl.innerHTML = `<div class="table-wrap"><table class="data-table">
+    <thead><tr>
+      <th>Product</th><th>Line</th><th class="num">Qty</th><th>Due</th><th>Delivered</th><th class="num">Δ</th><th></th>
+    </tr></thead>
+    <tbody>
+      ${rows.map(r => {
+        const delta = r.delivery_delta_h;
+        let deltaHtml = '<span class="delta-chip na">—</span>';
+        if(delta != null){
+          const cls = delta > 0 ? 'late' : 'early';
+          const label = (delta > 0 ? '+' : '') + delta.toFixed(1) + 'h';
+          deltaHtml = `<span class="delta-chip ${cls}">${label}</span>`;
+        }
+        return `<tr>
+          <td>${escapeHtml(r.sachnummer||'—')}</td>
+          <td>${escapeHtml(r.assigned_line||'—')}</td>
+          <td class="num">${r.quantity ?? '—'}</td>
+          <td>${formatIsoDateTime(r.due_date)}</td>
+          <td>${formatIsoDateTime(r.delivered_date)}</td>
+          <td class="num">${deltaHtml}</td>
+          <td>${r.rush ? '<span class="rush-chip">RUSH</span>' : ''}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>`;
+}
+
+/* =========================================================================
+   Push issues — unassigned orders & exotic supermarket overflow
+   ========================================================================= */
+function renderPushIssuesPanel(data){
+  const unassigned = (data && data.push_unassigned_log) || [];
+  const overflow = (data && data.supermarket_overflow_log) || [];
+
+  const uEl = document.getElementById('pushUnassignedContainer');
+  if(!unassigned.length){
+    uEl.innerHTML = '<div class="empty-state"><div class="icon">✅</div><h3>None</h3><p>Every push order this run found a feasible line and a parseable due date.</p></div>';
+  }else{
+    uEl.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Period</th><th>Product</th><th class="num">Qty</th><th>Reason</th></tr></thead>
+      <tbody>${unassigned.map(u => `<tr>
+        <td>${escapeHtml(u.period_label||'—')}</td>
+        <td>${escapeHtml(u.product_id||'—')}</td>
+        <td class="num">${u.quantity ?? '—'}</td>
+        <td>${escapeHtml(u.reason||'—')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  }
+
+  const oEl = document.getElementById('pushOverflowContainer');
+  if(!overflow.length){
+    oEl.innerHTML = '<div class="empty-state"><div class="icon">✅</div><h3>None</h3><p>No exotic supermarket slot pool filled up this run.</p></div>';
+  }else{
+    oEl.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Time</th><th>Line</th><th>Product</th><th>Reason</th></tr></thead>
+      <tbody>${overflow.map(f => `<tr>
+        <td>${f.t!=null? (f.t/3600).toFixed(2)+'h':'—'}</td>
+        <td>${escapeHtml(f.line||'—')}</td>
+        <td>${escapeHtml(f.sachnummer||'—')}</td>
+        <td>${escapeHtml(f.reason||'—')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  }
+}
+
+/* =========================================================================
+   Card Flow (stacked-area census over time) — Kanban tab only
+   ========================================================================= */
+function renderCardFlowLineSelect(cardFlow){
+  const sel = document.getElementById('cfLineSelect');
+  const lines = (cardFlow && cardFlow.lines) || [];
+  const prevValue = sel.value;
+  sel.innerHTML = '<option value="total">Total (all lines)</option>' +
+    lines.map(l => `<option value="${l.line_id}">${escapeHtml(l.line_name)}</option>`).join('');
+  if([...sel.options].some(o => o.value === prevValue)){ sel.value = prevValue; } else { sel.value = 'total'; }
+}
+
+function renderCardFlowChart(cardFlow){
+  lastCardFlowData = cardFlow;
+  const container = document.getElementById('cardFlowContainer');
+  if(!cardFlow){ container.innerHTML = '<div class="empty-state"><p>No card-flow data.</p></div>'; document.getElementById('daytabs-pull-cardflow').innerHTML=''; return; }
+  cardStateColorMap = {};
+  const states = cardFlow.states || [];
+
+  renderCardFlowLineSelect(cardFlow);
+  const sel = document.getElementById('cfLineSelect');
+  const selectedLineId = sel.value || 'total';
+  const isTotal = selectedLineId === 'total';
+  let series = isTotal ? (cardFlow.series || []) : ((cardFlow.series_by_line && cardFlow.series_by_line[selectedLineId]) || []);
+  const selectedLineName = isTotal ? 'all lines' :
+    ((cardFlow.lines || []).find(l => String(l.line_id) === String(selectedLineId)) || {}).line_name || selectedLineId;
+
+  document.getElementById('cfLegend').innerHTML = states.map((s,i)=>
+    `<div class="legend-item"><span class="legend-swatch" style="background:${colorForState(s,i)}"></span>${escapeHtml(s)}</div>`
+  ).join('');
+
+  const cardsInView = isTotal ? cardFlow.cards.length : cardFlow.cards.filter(c => String(c.line_id) === String(selectedLineId)).length;
+  const fullHorizon = cardFlow.horizon || (series.length ? series[series.length-1].t : 1) || 1;
+
+  renderDayTabs('pull-cardflow', fullHorizon, cardFlow.time_unit);
+  const day = dayTabState['pull-cardflow'] || 'full';
+  const isFullSpan = day === 'full';
+  const win = isFullSpan ? {start:0, end:fullHorizon} : dayWindowFor(day, cardFlow.time_unit, fullHorizon);
+  series = series.filter(pt => pt.t >= win.start - 1e-9 && pt.t <= win.end + 1e-9);
+  const horizon = Math.max(win.end - win.start, 1e-6);
+
+  const dayLabel = isFullSpan ? `full span, ${fullHorizon.toLocaleString(undefined,{maximumFractionDigits:2})} ${unitLabel(cardFlow.time_unit)}` :
+    `Day ${day}, ${win.start.toFixed(1)}–${win.end.toFixed(1)} ${unitLabel(cardFlow.time_unit)}`;
+  document.getElementById('cardFlowSubline').textContent =
+    `${dayLabel} · ${cardsInView} cards tracked on ${selectedLineName} · ${states.length} states`;
+
+  if(!series.length || !states.length){ container.innerHTML = '<div class="empty-state"><p>No card-flow series data for this range.</p></div>'; return; }
+
+  // Full span: fixed 8h-of-day ticks + a day-markers row underneath, both
+  // labelled with real clock time / calendar date (same treatment as the
+  // Gantt charts). Single-day slice keeps a "nice" numeric tick step.
+  const dayStartHour = getDayStartHour();
+  const dayLenAbs = dayLengthFor(cardFlow.time_unit);
+  const dayMarkerRowH = isFullSpan ? 30 : 0;
+  // Full span: the viewBox width itself scales with the horizon (same
+  // px-per-day zoom as the Gantt), so the drawing is actually stretched
+  // rather than just given more (blank) canvas via the width attribute.
+  let W = 900, widthAttr = '100%';
+  if(isFullSpan){
+    const totalDays = fullHorizon / dayLenAbs;
+    W = Math.max(900, Math.round(totalDays * GANTT_PX_PER_DAY));
+    widthAttr = W;
+  }
+  const baseH = 320, padL = 56, padB = 26, padT = 10, padR = 10;
+  const H = baseH + dayMarkerRowH;
+  const plotW = W - padL - padR, plotH = baseH - padT - padB;
+  const maxTotal = Math.max(1, ...series.map(pt => states.reduce((s,k)=>s+(pt[k]||0),0)));
+  const xFor = t => padL + ((t-win.start)/horizon)*plotW;
+  const yFor = v => padT + plotH - (v/maxTotal)*plotH;
+
+  let cum = series.map(()=>0);
+  const paths = states.map((st, idx) => {
+    const top = [], bottom = [];
+    series.forEach((pt,i)=>{
+      const base = cum[i], val = pt[st] || 0, t2 = base + val;
+      top.push(`${xFor(pt.t)},${yFor(t2)}`); bottom.push(`${xFor(pt.t)},${yFor(base)}`); cum[i] = t2;
+    });
+    const d = `M${top.join(' L')} L${bottom.slice().reverse().join(' L')} Z`;
+    return { d, color: colorForState(st, idx) };
+  });
+
+  // Real-time tick spacing: every 2h across the full span, every 1h within a single day slice.
+  const step = isFullSpan ? (dayLenAbs/24)*2 : (dayLenAbs/24)*1;
+  const nTicks = Math.ceil(horizon/step);
+  let gridSvg = '', axisSvg = '';
+  for(let i=0;i<=nTicks;i++){
+    const t = i*step; if(t > horizon + 1e-9) break;
+    const x = xFor(win.start + t);
+    gridSvg += `<line class="cf-gridline" x1="${x}" y1="${padT}" x2="${x}" y2="${padT+plotH}" />`;
+    const absHour = dayStartHour + elapsedToHours(win.start + t, cardFlow.time_unit);
+    axisSvg += `<text class="cf-axis-label" x="${x}" y="${baseH-6}" text-anchor="middle">${formatClockTime(absHour)}</text>`;
+  }
+
+  let dayMarkerSvg = '';
+  if(isFullSpan){
+    const nDaysFull = dayCountFor(fullHorizon, cardFlow.time_unit);
+    const tickY0 = baseH + 6, tickY1 = baseH + 13, labelY = baseH + 24;
+    let markers = `<line class="cf-daymarker-sep" x1="${padL}" y1="${baseH}" x2="${W-padR}" y2="${baseH}" />`;
+    for(let d=1; d<=nDaysFull; d++){
+      const t = (d-1) * dayLenAbs;
+      if(t > horizon + 1e-9) break;
+      const x = xFor(win.start + t);
+      markers += `<line class="cf-daymarker-tick" x1="${x}" y1="${tickY0}" x2="${x}" y2="${tickY1}" />
+        <text class="cf-daymarker-label" x="${x+3}" y="${labelY}" text-anchor="start">Day ${d} / ${dateForDay(d)}</text>`;
+    }
+    dayMarkerSvg = markers;
+  }
+
+  const yStep = niceTickStep(maxTotal, 5);
+  const yTicksCount = Math.ceil(maxTotal/yStep) || 1;
+  let yGridSvg = '', yAxisSvg = '';
+  for(let i=0;i<=yTicksCount;i++){
+    const v = i*yStep; if(v > maxTotal + yStep*0.5) break;
+    const y = yFor(v);
+    yGridSvg += `<line class="cf-gridline" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" />`;
+    yAxisSvg += `<text class="cf-axis-label" x="${padL-8}" y="${y+3}" text-anchor="end">${v.toLocaleString()}</text>`;
+  }
+  const yAxisTitleSvg = `<text class="cf-axis-label" transform="rotate(-90)" x="${-(padT+plotH/2)}" y="14" text-anchor="middle">Cards</text>`;
+  const pathsSvg = paths.map(p => `<path class="cf-area" d="${p.d}" fill="${p.color}" fill-opacity="0.85" stroke="#fff" stroke-width="0.5"></path>`).join('');
+
+  const binW = plotW / series.length;
+  const hoverSvg = series.map(pt => {
+    const cx = xFor(pt.t);
+    const total = states.reduce((s,k)=>s+(pt[k]||0),0);
+    let tooltip = `<b>${absClockLabel(pt.t, cardFlow.time_unit)}</b><br>`;
+    states.filter(st => (pt[st]||0) > 0).forEach(st => { tooltip += `${escapeHtml(st)}: ${(pt[st]||0).toLocaleString()} cards<br>`; });
+    tooltip += `<span class="tt-muted"><b>Total: ${total.toLocaleString()} cards</b></span>`;
+    const tooltipJson = JSON.stringify(tooltip).replace(/"/g,'&quot;');
+    return `<rect x="${cx-binW/2}" y="${padT}" width="${binW}" height="${plotH}" fill="transparent"
+      onmouseenter="showTooltip(event, ${tooltipJson})" onmousemove="showTooltip(event, ${tooltipJson})" onmouseleave="hideTooltip()"></rect>`;
+  }).join('');
+
+  container.innerHTML = `<div class="cf-wrap"><svg class="cf-chart-svg" viewBox="0 0 ${W} ${H}" width="${widthAttr}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    ${gridSvg}${yGridSvg}${pathsSvg}${axisSvg}${yAxisSvg}${yAxisTitleSvg}${dayMarkerSvg}${hoverSvg}
+  </svg></div>`;
+}
+
+/* =========================================================================
+   Shortfall — Kanban tab only. Two views, picked via the "Shortfall
+   (line)" dropdown (same pattern as the Supermarket tab's line select):
+     - "Total (all lines)": every production line's unmet-withdrawal
+       count as its own open line, all in parallel on one chart, so the
+       lines can be compared directly.
+     - a specific line: that line's shortfall broken down per product
+       (sachnummer), stacked — reuses the same drawStackedQuantityChart
+       the Supermarket tab uses for packages/Restmenge.
+   Same "Full span / Day N" windowing as Card Flow throughout. Lines/
+   products that never had a shortfall are left out of their respective
+   view; if NOTHING in the run ever had a shortfall, the whole panel
+   shows an empty state instead of an all-zero chart.
+
+   Expected payload shape (mirrors card_flow.series_by_line /
+   line_units_series' packages_series):
+     cardFlow.shortfall_by_line = {
+       [line_id]: [ {t, <product>: n, ..., total: n}, ... ]
+     }   // n = count of withdrawal requests still open (customer asked,
+         // supermarket had 0) at that instant, per product
+     cardFlow.shortfall_products_by_line = { [line_id]: [product, ...] }
+   cardFlow.lines still supplies { line_id, line_name } for labels/colors.
+   ========================================================================= */
+function renderShortfallLineSelect(cardFlow){
+  const sel = document.getElementById('sfLineSelect');
+  const lines = (cardFlow && cardFlow.lines) || [];
+  const prevValue = sel.value;
+  sel.innerHTML = '<option value="total">Total (all lines)</option>' +
+    lines.map(l => `<option value="${l.line_id}">${escapeHtml(l.line_name)}</option>`).join('');
+  if([...sel.options].some(o => o.value === prevValue)){ sel.value = prevValue; } else { sel.value = 'total'; }
+}
+
+function renderShortfallChart(cardFlow){
+  const container = document.getElementById('shortfallContainer');
+  const legend = document.getElementById('sfLegend');
+  if(!cardFlow){
+    container.innerHTML = '<div class="empty-state"><p>No card-flow data.</p></div>';
+    document.getElementById('daytabs-pull-shortfall').innerHTML = '';
+    document.getElementById('sfLineSelect').innerHTML = '';
+    legend.innerHTML = '';
+    return;
+  }
+
+  shortfallProductColorMap = {};
+  const byLine = cardFlow.shortfall_by_line || {};
+  const productsByLine = cardFlow.shortfall_products_by_line || {};
+  const linesWithShortfall = (cardFlow.lines || []).filter(l => (byLine[l.line_id] || []).some(pt => (pt.total || 0) > 0));
+
+  const fullHorizon = cardFlow.horizon || 1;
+  renderDayTabs('pull-shortfall', fullHorizon, cardFlow.time_unit);
+
+  if(!linesWithShortfall.length){
+    container.innerHTML = '<div class="empty-state"><div class="icon">✅</div><h3>No shortfalls</h3><p>Every Kanban withdrawal in this run found a card available at the supermarket — nothing to plot.</p></div>';
+    legend.innerHTML = '';
+    document.getElementById('sfLineSelect').innerHTML = '<option value="total">Total (all lines)</option>';
+    document.getElementById('shortfallSubline').textContent = 'No withdrawal in this run ever found an empty supermarket slot.';
+    return;
+  }
+
+  renderShortfallLineSelect(cardFlow);
+  const sel = document.getElementById('sfLineSelect');
+  const selectedLineId = sel.value || 'total';
+  const isTotal = selectedLineId === 'total';
+
+  const day = dayTabState['pull-shortfall'] || 'full';
+  const isFullSpan = day === 'full';
+  const win = isFullSpan ? {start:0, end:fullHorizon} : dayWindowFor(day, cardFlow.time_unit, fullHorizon);
+  const dayLabel = isFullSpan ? `full span, ${fullHorizon.toLocaleString(undefined,{maximumFractionDigits:2})} ${unitLabel(cardFlow.time_unit)}` :
+    `Day ${day}, ${win.start.toFixed(1)}–${win.end.toFixed(1)} ${unitLabel(cardFlow.time_unit)}`;
+
+  if(isTotal){
+    legend.innerHTML = linesWithShortfall.map((l,i)=>
+      `<div class="legend-item"><span class="legend-swatch" style="background:${colorForLine(l.line_id,i)}"></span>${escapeHtml(l.line_name)}</div>`
+    ).join('');
+    document.getElementById('shortfallSubline').textContent =
+      `${dayLabel} · ${linesWithShortfall.length} line${linesWithShortfall.length===1?'':'s'} with at least one unmet withdrawal`;
+    drawShortfallParallelLinesChart('shortfallContainer', cardFlow, linesWithShortfall, byLine, win, isFullSpan, fullHorizon);
+    return;
+  }
+
+  const line = (cardFlow.lines || []).find(l => String(l.line_id) === String(selectedLineId));
+  const products = productsByLine[selectedLineId] || [];
+  if(!line || !products.length){
+    container.innerHTML = '<div class="empty-state"><div class="icon">✅</div><h3>No shortfalls on this line</h3><p>Every withdrawal on this line found a card available — nothing to plot.</p></div>';
+    legend.innerHTML = '';
+    document.getElementById('shortfallSubline').textContent = `${dayLabel} · ${line ? line.line_name : selectedLineId} had no shortfalls`;
+    return;
+  }
+  legend.innerHTML = products.map((p,i)=>
+    `<div class="legend-item"><span class="legend-swatch" style="background:${colorForShortfallProduct(p,i)}"></span>${escapeHtml(p)}</div>`
+  ).join('');
+  document.getElementById('shortfallSubline').textContent =
+    `${dayLabel} · ${line.line_name} · ${products.length} product${products.length===1?'':'s'} with at least one unmet withdrawal`;
+  drawStackedQuantityChart('shortfallContainer', byLine[selectedLineId] || [], products, cardFlow.time_unit, win,
+    line.line_name, 'unmet', 'Total unmet', 'Unmet withdrawals', isFullSpan, colorForShortfallProduct);
+}
+
+// The "Total (all lines)" view: one open line (not stacked) per
+// production line, all drawn together so they can be compared directly —
+// distinct from drawStackedQuantityChart's per-product stacked areas used
+// for the single-line view above.
+function drawShortfallParallelLinesChart(containerId, cardFlow, lines, byLine, win, isFullSpan, fullHorizon){
+  const container = document.getElementById(containerId);
+  const horizon = Math.max(win.end - win.start, 1e-6);
+
+  const seriesByLine = lines.map((l,i) => ({
+    line: l, idx: i,
+    series: (byLine[l.line_id] || []).filter(pt => pt.t >= win.start - 1e-9 && pt.t <= win.end + 1e-9)
+  })).filter(e => e.series.length);
+
+  if(!seriesByLine.length){
+    container.innerHTML = '<div class="empty-state"><p>No shortfall data for this range.</p></div>';
+    return;
+  }
+
+  const dayStartHour = getDayStartHour();
+  const dayLenAbs = dayLengthFor(cardFlow.time_unit);
+  const dayMarkerRowH = isFullSpan ? 30 : 0;
+  let W = 900, widthAttr = '100%';
+  if(isFullSpan){
+    const totalDays = fullHorizon / dayLenAbs;
+    W = Math.max(900, Math.round(totalDays * GANTT_PX_PER_DAY));
+    widthAttr = W;
+  }
+  const baseH = 260, padL = 56, padB = 26, padT = 10, padR = 10;
+  const H = baseH + dayMarkerRowH;
+  const plotW = W - padL - padR, plotH = baseH - padT - padB;
+  const maxVal = Math.max(1, ...seriesByLine.flatMap(e => e.series.map(pt => pt.total || 0)));
+  const xFor = t => padL + ((t-win.start)/horizon)*plotW;
+  const yFor = v => padT + plotH - (v/maxVal)*plotH;
+
+  const linesSvg = seriesByLine.map(e => {
+    const color = colorForLine(e.line.line_id, e.idx);
+    const pathPts = e.series.map(pt => `${xFor(pt.t)},${yFor(pt.total || 0)}`).join(' L');
+    const dotsSvg = e.series.filter(pt => (pt.total || 0) > 0).map(pt =>
+      `<circle class="cf-dot" cx="${xFor(pt.t)}" cy="${yFor(pt.total||0)}" r="3" fill="${color}"></circle>`
+    ).join('');
+    return `<path class="cf-line" d="M${pathPts}" stroke="${color}"></path>${dotsSvg}`;
+  }).join('');
+
+  // Real-time tick spacing: every 2h across the full span, every 1h within a single day slice.
+  const step = isFullSpan ? (dayLenAbs/24)*2 : (dayLenAbs/24)*1;
+  const nTicks = Math.ceil(horizon/step);
+  let gridSvg = '', axisSvg = '';
+  for(let i=0;i<=nTicks;i++){
+    const t = i*step; if(t > horizon + 1e-9) break;
+    const x = xFor(win.start + t);
+    gridSvg += `<line class="cf-gridline" x1="${x}" y1="${padT}" x2="${x}" y2="${padT+plotH}" />`;
+    const absHour = dayStartHour + elapsedToHours(win.start + t, cardFlow.time_unit);
+    axisSvg += `<text class="cf-axis-label" x="${x}" y="${baseH-6}" text-anchor="middle">${formatClockTime(absHour)}</text>`;
+  }
+
+  let dayMarkerSvg = '';
+  if(isFullSpan){
+    const nDaysFull = dayCountFor(fullHorizon, cardFlow.time_unit);
+    const tickY0 = baseH + 6, tickY1 = baseH + 13, labelY = baseH + 24;
+    let markers = `<line class="cf-daymarker-sep" x1="${padL}" y1="${baseH}" x2="${W-padR}" y2="${baseH}" />`;
+    for(let d=1; d<=nDaysFull; d++){
+      const t = (d-1) * dayLenAbs;
+      if(t > horizon + 1e-9) break;
+      const x = xFor(win.start + t);
+      markers += `<line class="cf-daymarker-tick" x1="${x}" y1="${tickY0}" x2="${x}" y2="${tickY1}" />
+        <text class="cf-daymarker-label" x="${x+3}" y="${labelY}" text-anchor="start">Day ${d} / ${dateForDay(d)}</text>`;
+    }
+    dayMarkerSvg = markers;
+  }
+
+  const yStep = niceTickStep(maxVal, 5);
+  const yTicksCount = Math.ceil(maxVal/yStep) || 1;
+  let yGridSvg = '', yAxisSvg = '';
+  for(let i=0;i<=yTicksCount;i++){
+    const v = i*yStep; if(v > maxVal + yStep*0.5) break;
+    const y = yFor(v);
+    yGridSvg += `<line class="cf-gridline" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" />`;
+    yAxisSvg += `<text class="cf-axis-label" x="${padL-8}" y="${y+3}" text-anchor="end">${v.toLocaleString()}</text>`;
+  }
+  const yAxisTitleSvg = `<text class="cf-axis-label" transform="rotate(-90)" x="${-(padT+plotH/2)}" y="14" text-anchor="middle">Unmet withdrawals</text>`;
+
+  // Hover: union of all timestamps across the plotted lines so one vertical
+  // band shows every line's value at that instant.
+  const allTimes = [...new Set(seriesByLine.flatMap(e => e.series.map(pt => pt.t)))].sort((a,b)=>a-b);
+  const binW = allTimes.length > 1 ? plotW / allTimes.length : plotW;
+  const hoverSvg = allTimes.map(t => {
+    const cx = xFor(t);
+    let tooltip = `<b>${absClockLabel(t, cardFlow.time_unit)}</b><br>`;
+    let any = false;
+    seriesByLine.forEach(e => {
+      const pt = e.series.find(p => Math.abs(p.t - t) < 1e-9);
+      const v = pt ? (pt.total || 0) : 0;
+      if(v > 0){ tooltip += `${escapeHtml(e.line.line_name)}: ${v.toLocaleString()} unmet<br>`; any = true; }
+    });
+    if(!any) tooltip += `<span class="tt-muted">No shortfall at this time</span>`;
+    const tooltipJson = JSON.stringify(tooltip).replace(/"/g,'&quot;');
+    return `<rect x="${cx-binW/2}" y="${padT}" width="${binW}" height="${plotH}" fill="transparent"
+      onmouseenter="showTooltip(event, ${tooltipJson})" onmousemove="showTooltip(event, ${tooltipJson})" onmouseleave="hideTooltip()"></rect>`;
+  }).join('');
+
+  container.innerHTML = `<div class="cf-wrap"><svg class="cf-chart-svg" viewBox="0 0 ${W} ${H}" width="${widthAttr}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    ${gridSvg}${yGridSvg}${linesSvg}${axisSvg}${yAxisSvg}${yAxisTitleSvg}${dayMarkerSvg}${hoverSvg}
+  </svg></div>`;
+}
+
+/* =========================================================================
+   Supermarkets: packages & Restmenge per line, stacked by product
+   ========================================================================= */
+function renderLineUnitsSelect(lineUnitsSeries){
+  const sel = document.getElementById('luSelect');
+  const lines = (lineUnitsSeries && lineUnitsSeries.lines) || [];
+  if(!lines.length){ sel.innerHTML = '<option value="">No lines</option>'; return; }
+  const prevValue = sel.value;
+  sel.innerHTML = '<option value="total">Total (all lines)</option>' +
+    lines.map((l,i)=> `<option value="${i}">${escapeHtml(l.line)}</option>`).join('');
+  if([...sel.options].some(o => o.value === prevValue)){ sel.value = prevValue; } else { sel.value = 'total'; }
+}
+
+function buildWholeProductionSeries(lineUnitsData, seriesKey){
+  const lines = (lineUnitsData && lineUnitsData.lines) || [];
+  if(!lines.length || !lines[0][seriesKey] || !lines[0][seriesKey].length) return { series: [], lineNames: [] };
+  const lineNames = lines.map(l => l.line);
+  const nPoints = lines[0][seriesKey].length;
+  const series = [];
+  for(let i=0;i<nPoints;i++){
+    const pt = { t: lines[0][seriesKey][i].t };
+    let total = 0;
+    lines.forEach(l => { const point = l[seriesKey][i]; const v = (point && point.total) || 0; pt[l.line] = v; total += v; });
+    pt.total = total;
+    series.push(pt);
+  }
+  return { series, lineNames };
+}
+
+// Some lines carry more configured products than actually show up in a given
+// series (e.g. a product with zero packages/Restmenge on this line) — only
+// keep the ones that actually have data, so the legend/graph match reality.
+function participatingProducts(products, series){
+  if(!products || !products.length) return [];
+  if(!series || !series.length) return [];
+  return products.filter(p => series.some(pt => (pt[p]||0) > 0));
+}
+
+function renderLineUnitsCharts(){
+  const pkgContainer = document.getElementById('lineUnitsPackagesContainer');
+  const rmContainer = document.getElementById('lineUnitsRestmengeContainer');
+  const legend = document.getElementById('luLegend');
+  const data = lastResult && lastResult.line_units_series;
+  if(!data || !data.lines || !data.lines.length){
+    pkgContainer.innerHTML = '<div class="empty-state"><p>No supermarket data.</p></div>';
+    rmContainer.innerHTML = '';
+    document.getElementById('daytabs-pull-supermarket').innerHTML = '';
+    return;
+  }
+  const sel = document.getElementById('luSelect');
+  const selVal = sel.value || 'total';
+  lineUnitsColorMap = {};
+
+  // Day tabs are keyed off the overall sim horizon (gantt), kept consistent with the other panels.
+  const fullHorizon = (lastResult.gantt && lastResult.gantt.horizon) || 1;
+  const fullUnit = (lastResult.gantt && lastResult.gantt.time_unit) || data.time_unit;
+  renderDayTabs('pull-supermarket', fullHorizon, fullUnit);
+  const day = dayTabState['pull-supermarket'] || 'full';
+  const win = (day === 'full') ? {start:0, end:fullHorizon} : dayWindowFor(day, fullUnit, fullHorizon);
+
+  const isFullSpan = day === 'full';
+  if(selVal === 'total'){
+    const pkgWhole = buildWholeProductionSeries(data, 'packages_series');
+    const rmWhole = buildWholeProductionSeries(data, 'restmenge_series');
+    legend.innerHTML = pkgWhole.lineNames.map((n,i)=>`<div class="legend-item"><span class="legend-swatch" style="background:${colorForProduct(n,i)}"></span>${escapeHtml(n)}</div>`).join('');
+    drawStackedQuantityChart('lineUnitsPackagesContainer', pkgWhole.series, pkgWhole.lineNames, data.time_unit, win, 'Total', 'packages', 'Total packages', 'Packages', isFullSpan);
+    drawStackedQuantityChart('lineUnitsRestmengeContainer', rmWhole.series, rmWhole.lineNames, data.time_unit, win, 'Total', 'pcs', 'Total Restmenge', 'Pcs', isFullSpan);
+  } else {
+    const line = data.lines[parseInt(selVal,10)];
+    if(!line){ pkgContainer.innerHTML = '<div class="empty-state"><p>No data for this line.</p></div>'; rmContainer.innerHTML=''; return; }
+    const allProducts = line.products || [];
+    const pkgProducts = participatingProducts(allProducts, line.packages_series);
+    const rmProducts = participatingProducts(allProducts, line.restmenge_series);
+    // Legend covers both charts for this line, so union the two — but still
+    // only products that actually participate somewhere for this line.
+    const legendProducts = allProducts.filter(p => pkgProducts.includes(p) || rmProducts.includes(p));
+    legend.innerHTML = legendProducts.map((p,i)=>`<div class="legend-item"><span class="legend-swatch" style="background:${colorForProduct(p,i)}"></span>${escapeHtml(p)}</div>`).join('');
+    drawStackedQuantityChart('lineUnitsPackagesContainer', line.packages_series || [], pkgProducts, data.time_unit, win, line.line, 'packages', 'Total packages', 'Packages', isFullSpan);
+    drawStackedQuantityChart('lineUnitsRestmengeContainer', line.restmenge_series || [], rmProducts, data.time_unit, win, line.line, 'pcs', 'Total Restmenge', 'Pcs', isFullSpan);
+  }
+}
+
+// isFullSpan mirrors the Gantt full-span view: fixed 8h-of-day ticks (vs a
+// "nice" numeric step for a single-day slice), a day-markers row underneath
+// the chart, and a fixed px-per-day width inside .cf-wrap's horizontal
+// scroller (same GANTT_PX_PER_DAY zoom as the Gantt charts).
+function drawStackedQuantityChart(containerId, series, products, timeUnit, windowRange, lineName, qtyLabel, totalLabel, axisTitle, isFullSpan, colorFn){
+  colorFn = colorFn || colorForProduct;
+  const container = document.getElementById(containerId);
+  const fullHorizon = series && series.length ? series[series.length-1].t : 1;
+  const win = windowRange || {start:0, end:fullHorizon};
+  if(series && series.length){
+    series = series.filter(pt => pt.t >= win.start - 1e-9 && pt.t <= win.end + 1e-9);
+  }
+  if(!series || !series.length || !products || !products.length){
+    container.innerHTML = '<div class="empty-state"><p>No data for this range.</p></div>';
+    return;
+  }
+  const horizon = Math.max(win.end - win.start, 1e-6);
+  const dayStartHour = getDayStartHour();
+  const dayLenAbs = dayLengthFor(timeUnit);
+  const dayMarkerRowH = isFullSpan ? 30 : 0;
+  // Full span: the viewBox width itself scales with the horizon (same
+  // px-per-day zoom as the Gantt), so the drawing is actually stretched
+  // rather than just given more (blank) canvas via the width attribute.
+  let W = 900, widthAttr = '100%';
+  if(isFullSpan){
+    const totalDays = fullHorizon / dayLenAbs;
+    W = Math.max(900, Math.round(totalDays * GANTT_PX_PER_DAY));
+    widthAttr = W;
+  }
+  const baseH = 280, padL = 56, padB = 26, padT = 10, padR = 10;
+  const H = baseH + dayMarkerRowH;
+  const plotW = W - padL - padR, plotH = baseH - padT - padB;
+  const maxTotal = Math.max(1, ...series.map(pt => pt.total || products.reduce((s,p)=>s+(pt[p]||0),0)));
+  const xFor = t => padL + ((t-win.start)/horizon)*plotW;
+  const yFor = v => padT + plotH - (v/maxTotal)*plotH;
+
+  let cum = series.map(()=>0);
+  const paths = products.map((p, idx) => {
+    const top = [], bottom = [];
+    series.forEach((pt,i)=>{
+      const base = cum[i], val = pt[p] || 0, t2 = base + val;
+      top.push(`${xFor(pt.t)},${yFor(t2)}`); bottom.push(`${xFor(pt.t)},${yFor(base)}`); cum[i] = t2;
+    });
+    const d = `M${top.join(' L')} L${bottom.slice().reverse().join(' L')} Z`;
+    return `<path class="cf-area" d="${d}" fill="${colorFn(p, idx)}" fill-opacity="0.85" stroke="#fff" stroke-width="0.5"></path>`;
+  }).join('');
+
+  // Real-time tick spacing: every 2h across the full span, every 1h within a single day slice.
+  const step = isFullSpan ? (dayLenAbs/24)*2 : (dayLenAbs/24)*1;
+  const nTicks = Math.ceil(horizon/step);
+  let gridSvg = '', axisSvg = '';
+  for(let i=0;i<=nTicks;i++){
+    const t = i*step; if(t > horizon + 1e-9) break;
+    const x = xFor(win.start + t);
+    gridSvg += `<line class="cf-gridline" x1="${x}" y1="${padT}" x2="${x}" y2="${padT+plotH}" />`;
+    const absHour = dayStartHour + elapsedToHours(win.start + t, timeUnit);
+    axisSvg += `<text class="cf-axis-label" x="${x}" y="${baseH-6}" text-anchor="middle">${formatClockTime(absHour)}</text>`;
+  }
+
+  let dayMarkerSvg = '';
+  if(isFullSpan){
+    const nDaysFull = dayCountFor(fullHorizon, timeUnit);
+    const tickY0 = baseH + 6, tickY1 = baseH + 13, labelY = baseH + 24;
+    let markers = `<line class="cf-daymarker-sep" x1="${padL}" y1="${baseH}" x2="${W-padR}" y2="${baseH}" />`;
+    for(let d=1; d<=nDaysFull; d++){
+      const t = (d-1) * dayLenAbs;
+      if(t > horizon + 1e-9) break;
+      const x = xFor(win.start + t);
+      markers += `<line class="cf-daymarker-tick" x1="${x}" y1="${tickY0}" x2="${x}" y2="${tickY1}" />
+        <text class="cf-daymarker-label" x="${x+3}" y="${labelY}" text-anchor="start">Day ${d} / ${dateForDay(d)}</text>`;
+    }
+    dayMarkerSvg = markers;
+  }
+
+  const yStep = niceTickStep(maxTotal, 5);
+  const yTicksCount = Math.ceil(maxTotal/yStep) || 1;
+  let yGridSvg = '', yAxisSvg = '';
+  for(let i=0;i<=yTicksCount;i++){
+    const v = i*yStep; if(v > maxTotal + yStep*0.5) break;
+    const y = yFor(v);
+    yGridSvg += `<line class="cf-gridline" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" />`;
+    yAxisSvg += `<text class="cf-axis-label" x="${padL-8}" y="${y+3}" text-anchor="end">${v.toLocaleString()}</text>`;
+  }
+  const yAxisTitleSvg = `<text class="cf-axis-label" transform="rotate(-90)" x="${-(padT+plotH/2)}" y="14" text-anchor="middle">${escapeHtml(axisTitle)}</text>`;
+
+  const binW = plotW / series.length;
+  const hoverSvg = series.map(pt => {
+    const cx = xFor(pt.t);
+    const total = pt.total != null ? pt.total : products.reduce((s,p)=>s+(pt[p]||0),0);
+    let tooltip = `<b>${absClockLabel(pt.t, timeUnit)}</b><br>`;
+    products.filter(p => (pt[p]||0) > 0).forEach(p => { tooltip += `${escapeHtml(p)}: ${(pt[p]||0).toLocaleString()} ${qtyLabel}<br>`; });
+    tooltip += `<span class="tt-muted"><b>${escapeHtml(totalLabel)}: ${total.toLocaleString()} ${qtyLabel}</b></span>`;
+    const tooltipJson = JSON.stringify(tooltip).replace(/"/g,'&quot;');
+    return `<rect x="${cx-binW/2}" y="${padT}" width="${binW}" height="${plotH}" fill="transparent"
+      onmouseenter="showTooltip(event, ${tooltipJson})" onmousemove="showTooltip(event, ${tooltipJson})" onmouseleave="hideTooltip()"></rect>`;
+  }).join('');
+
+  container.innerHTML = `<div class="cf-wrap"><svg class="cf-chart-svg" viewBox="0 0 ${W} ${H}" width="${widthAttr}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    ${gridSvg}${yGridSvg}${paths}${axisSvg}${yAxisSvg}${yAxisTitleSvg}${dayMarkerSvg}${hoverSvg}
+  </svg></div>`;
+}
+
+function renderRestmengeStrip(restmenge){
+  const strip = document.getElementById('restmengeStrip');
+  if(!restmenge || !restmenge.length){ strip.innerHTML = ''; return; }
+  strip.innerHTML = restmenge.map(r => `
+    <div class="restmenge-chip">
+      <div class="rm-line">${escapeHtml(r.line)}</div>
+      <div class="rm-product">${escapeHtml(r.product)}</div>
+      <div class="rm-val">${r.pcs_partial} pcs</div>
+    </div>`).join('');
+}
+
+/* =========================================================================
+   Init
+   ========================================================================= */
+(function initStartDate(){
+  const el = document.getElementById('inStartDate');
+  if(el && !el.value){
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth()+1).padStart(2,'0');
+    const dd = String(today.getDate()).padStart(2,'0');
+    el.value = `${yyyy}-${mm}-${dd}`;
+  }
+})();
+checkHealth();
+</script>
+</body>
+</html>
