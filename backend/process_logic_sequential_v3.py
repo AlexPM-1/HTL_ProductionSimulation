@@ -72,6 +72,26 @@ Key changes vs. process_logic_sequential_v1.py
       of F00RC00638 — matching how finished goods are actually stored
       and picked up.
 
+8b. OEE loss (CombinedProductionLoss) wired as a production-rate
+    reduction, NOT a breakdown
+    - mixed_runner.py draws one CombinedProductionLoss value per line per
+      sim-day (OEELossTracker / oee_daily_process) and attaches the
+      tracker onto sim_env as `sim_env.oee_tracker`.
+    - process_part_at_station() now takes an optional `line_name` param;
+      when present (part_lifecycle always passes it), it reads
+      `sim_env.oee_tracker.get_current(line_name)` — a read-only lookup,
+      never a draw — and forwards it into _sample_processing_time().
+    - _sample_processing_time() stretches the sampled cycle time by
+      dividing the nominal mean by (1 − oee_loss). This is a continuous
+      rate reduction: the station still runs every cycle, just slower —
+      there is no separate down-state, no extra queueing/blocking beyond
+      normal BAS, and nothing here simulates a discrete stoppage event.
+    - No oee_tracker attached (push_runner/kanban_runner callers) or no
+      OEE bins configured for a line ⇒ get_current() returns None ⇒
+      _sample_processing_time() falls back to the original, unadjusted
+      behaviour — purely additive, same fallback spirit as the other
+      optional sheets in this codebase.
+
 8.  run_line() MOVED to push_runner_v4.py
     - This module keeps only the generic, policy-agnostic building blocks
       that any scheduling strategy (push, pull, kanban, ...) can reuse:
@@ -196,7 +216,11 @@ def _safe_attr_name(station_name: str) -> str:
     )
 
 
-def _sample_processing_time(rng, station_resource: StationResource) -> float:
+def _sample_processing_time(
+    rng,
+    station_resource: StationResource,
+    oee_loss: "Optional[float]" = None,
+) -> float:
     """
     STEP iii PLACEHOLDER — Gaussian processing-time sample.
 
@@ -204,20 +228,42 @@ def _sample_processing_time(rng, station_resource: StationResource) -> float:
     ----------
     rng              : random.Random (SimEnvironment.rng)
     station_resource : carries StationConfig with cycle_time_s
+    oee_loss         : today's per-line CombinedProductionLoss (a fraction,
+                        e.g. 0.15 for a 15 % loss), or None/0.0 if no OEE
+                        sheet is configured for this line — see
+                        OEELossTracker.get_current() (mixed_runner.py).
+                        Applied as a REDUCTION IN PRODUCTION, i.e. it
+                        stretches the sampled cycle time so the station
+                        effectively produces fewer pieces per hour — it is
+                        NOT modelled as a discrete breakdown/stoppage
+                        event (no separate down-state, no extra blocking
+                        beyond the normal BAS mechanics). See module docs.
 
     Returns
     -------
     float — seconds, always >= 0.1
 
     Replace ONLY this function body in Step iii once empirical distributions
-    (e.g. Weibull, Log-Normal) have been fitted.  The signature is frozen.
+    (e.g. Weibull, Log-Normal) have been fitted.  The signature is frozen
+    apart from the additive oee_loss parameter above.
 
     Current parameterisation
     ------------------------
         mean  = cycle_time_s         (from Excel — Process sheet)
-        sigma = 0.10 × cycle_time_s  (10 % CoV — placeholder)
+                / (1 − oee_loss)     (stretched by today's OEE loss, if any)
+        sigma = 0.10 × mean          (10 % CoV — placeholder, applied to
+                                       the OEE-adjusted mean, so variability
+                                       scales with the slower effective rate)
     """
-    mean  = station_resource.station_cfg.cycle_time_s
+    mean = station_resource.station_cfg.cycle_time_s
+    if oee_loss:
+        # Clamp defensively: bin tables are expected to stay well under 1.0
+        # (observed workbook values top out ~0.35), but a corrupt/edited
+        # sheet could in principle produce a 1.0+ loss, which would blow up
+        # (or invert) the division below.
+        loss = min(max(oee_loss, 0.0), 0.95)
+        if loss > 0.0:
+            mean = mean / (1.0 - loss)
     sigma = 0.10 * mean
     return round(max(0.1, rng.gauss(mean, sigma)), 2)
 
@@ -618,6 +664,12 @@ def run_lochfilter_drs_production(
                 yield from _draw_from_chute(sim_env, raw_chute, qty=1)
 
             t_start = round(env.now, 2)
+            # NOTE: intentionally NOT OEE-adjusted (no oee_loss passed) —
+            # this parallel Lochfilter/DRS sub-assembly process is outside
+            # the scope of the OEE-loss wiring below (process_part_at_station
+            # / part_lifecycle / run_one_order's main pipeline), which is
+            # where mixed_runner's daily CombinedProductionLoss draw is
+            # consumed. Revisit if OEE loss should also apply here.
             proc_time = _sample_processing_time(sim_env.rng, station_res)
             yield env.timeout(proc_time)
             t_end = round(env.now, 2)
@@ -647,6 +699,7 @@ def process_part_at_station(
     station_res:       StationResource,
     upstream_buffer:   "BufferResource | None",
     downstream_buffer: "BufferResource | None",
+    line_name:         "str | None" = None,
 ):
     """
     SimPy generator — one Part's pass through ONE station.
@@ -662,12 +715,30 @@ def process_part_at_station(
     1. REQUEST the station's SimPy Resource (FIFO queue when busy).
     2. Once granted: GET 1 token from upstream_buffer (part leaves buffer).
        Skipped for the first station (infinite input queue before Beladen).
-    3. TIMEOUT the sampled processing time.
+    3. TIMEOUT the sampled processing time — stretched by today's OEE loss
+       for `line_name`, if any (see "OEE loss" below).
     4. PUT 1 token into downstream_buffer WHILE still holding the machine.
        If the buffer is full, both part and machine are blocked until space
        opens (BAS: Blocking After Service).
        Skipped for the last station (unlimited final storage).
     5. Machine released when the `with` block exits.
+
+    OEE loss (CombinedProductionLoss)
+    ----------------------------------
+    If `sim_env` carries an `oee_tracker` (OEELossTracker — attached by
+    mixed_runner.run_mixed() as `kenv.oee_tracker`; absent/None for callers
+    that don't use it, e.g. push_runner/kanban_runner), this looks up
+    `line_name`'s already-drawn value for today via
+    `oee_tracker.get_current(line_name)` — a read-only lookup, it never
+    triggers a draw itself — and passes it into _sample_processing_time()
+    as a REDUCTION IN PRODUCTION: the sampled cycle time is stretched, so
+    the station effectively produces fewer pieces per hour. This is
+    deliberately NOT modelled as a breakdown/stoppage — there is no
+    separate down-state and no extra blocking beyond the ordinary BAS
+    mechanics above; the part still occupies the station for one
+    (longer) timeout, same as any other cycle. `line_name=None` (or no
+    oee_tracker, or no OEE bins configured for this line) means no
+    adjustment — the nominal cycle_time_s is used, unchanged from before.
 
     Timing attributes set on Part
     ------------------------------
@@ -679,7 +750,8 @@ def process_part_at_station(
     Statistics updated
     ------------------
     station_res.n_processed      += 1
-    station_res.total_busy_time  += pure processing time (step 3 only)
+    station_res.total_busy_time  += pure (OEE-adjusted) processing time
+                                     (step 3 only)
     downstream_buffer.max_observed_fill updated after each PUT.
     """
     env  = sim_env.env
@@ -699,7 +771,13 @@ def process_part_at_station(
         t_start = round(env.now, 2)
         setattr(part, f"t_{attr}_start", t_start)
 
-        proc_time = _sample_processing_time(sim_env.rng, station_res)
+        oee_tracker = getattr(sim_env, "oee_tracker", None)
+        oee_loss = (
+            oee_tracker.get_current(line_name)
+            if oee_tracker is not None and line_name is not None
+            else None
+        )
+        proc_time = _sample_processing_time(sim_env.rng, station_res, oee_loss)
         yield env.timeout(proc_time)
 
         t_end = round(env.now, 2)
@@ -795,7 +873,8 @@ def part_lifecycle(
             downstream = buffer_list[idx]     if idx < len(buffer_list) else None
 
             yield from process_part_at_station(
-                sim_env, part, station_res, upstream, downstream
+                sim_env, part, station_res, upstream, downstream,
+                line_name=line_name,
             )
 
         # ── Inspection at the last station ────────────────────────────────

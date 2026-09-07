@@ -65,6 +65,17 @@ workbook without these sheets:
 Note: the parser also accepts the older "SupermInState" / "SupermarketInitialState"
 sheet names for backward compatibility with not-yet-migrated workbooks.
 
+--- v6 / OEE addition --------------------------------------------------------
+A 5th new sheet, "OEE", is parsed the same additive/optional way as the
+Kanban sheets above (empty dict if absent):
+
+  OEE                   → SimConfig.oee_distribution : dict[line -> list[OEEBinConfig]]
+                          (per-line discrete probability distribution over
+                          OEE values: Line | Bin_down | Bin_up | Probability,
+                          one row per bin. This step only reads the table;
+                          the sampling logic that consumes it is a
+                          separate, later step.)
+
 
 Line-number ↔ line-name mapping
 --------------------------------
@@ -577,6 +588,35 @@ class KanbanTimingConfig:
     supermarket_capacity_cards: int = 25
 
 
+@dataclass
+class OEEBinConfig:
+    """
+    One OEE probability bin for one production line, from the "OEE" sheet.
+
+        Line | Bin_down | Bin_up | Probability
+
+    The sheet expresses, per line, a discrete probability distribution
+    over OEE (technical availability) values: each row is one bin
+    [bin_down, bin_up) together with the probability that the line's OEE
+    (for whatever unit of time the sampling logic will use — day/shift/run)
+    falls in that bin. Probabilities for a given line are expected to sum
+    to ~1.0 across its rows, but that is not enforced by this parser —
+    reading is purely mechanical here; sampling from the distribution
+    (and any validation of it) is a separate, not-yet-implemented step.
+
+    Attributes
+    ----------
+    line        : "HTL3" | "HTL5" | "HTL6"
+    bin_down    : lower bound of the OEE bin (inclusive), typically 0..1
+    bin_up      : upper bound of the OEE bin (exclusive), typically 0..1
+    probability : probability mass assigned to this bin, 0..1
+    """
+    line: str
+    bin_down: float
+    bin_up: float
+    probability: float
+
+
 # Bare 'DD.MM.YYYY' (optionally followed by more text) — same convention as
 # the CustomerDemand/CustomerDemandKanban "Date" cells throughout this
 # module. Used only by the "Shifts" sheet's "Day" column parser below.
@@ -803,6 +843,13 @@ class SimConfig:
 
     # withdrawal cadence + collection-box emptying interval, from "KanbanConfig"
     kanban_timing: KanbanTimingConfig = field(default_factory=KanbanTimingConfig)
+
+    # --- v6 / OEE field (additive; empty when the "OEE" sheet is absent) -
+
+    # line_name → list[OEEBinConfig], from "OEE" (one entry per bin row,
+    # in sheet order within each line). Reading only for now — sampling
+    # logic that consumes this distribution is a separate, later step.
+    oee_distribution: dict[str, list[OEEBinConfig]] = field(default_factory=dict)
 
     # --- v6 / Shifts field (additive; empty when the "Shifts" sheet is ---
     # absent — see _parse_shifts_sheet docstring) -------------------------
@@ -1753,6 +1800,69 @@ def _parse_supermarkets_sheet(
     return result
 
 
+def _parse_oee_sheet(xls: pd.ExcelFile) -> dict[str, list[OEEBinConfig]]:
+    """
+    Parse the "OEE" sheet into {line: [OEEBinConfig, ...]}, one entry per
+    bin row, in sheet order within each line.
+
+        Line | Bin_down | Bin_up | Probability
+
+    Gracefully no-ops (returns {}) if the sheet is absent, so workbooks
+    without it still load fine — this is purely additive, mirroring the
+    Kanban/Supermarkets/Shifts sheets elsewhere in this module. The
+    sampling logic that will actually consume this distribution (e.g.
+    drawing a per-line OEE value from its bins) is implemented separately
+    as a later step; this parser only reads the raw bin table.
+
+    Bin_down/Bin_up/Probability are read as floats as-is — pandas already
+    resolves the workbook's own (locale-specific) decimal formatting to a
+    real float value, so no string/comma parsing is needed here regardless
+    of whether the workbook displays e.g. "0,0500" (German) or "0.0500".
+
+    Rows with a blank Line, or a blank Bin_down/Bin_up/Probability, are
+    skipped silently (mirrors the blank-tolerance pattern used elsewhere
+    in this module).
+    """
+    sheet_name = "OEE"
+    if sheet_name not in xls.sheet_names:
+        return {}
+
+    df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    required = ("Line", "Bin_down", "Bin_up", "Probability")
+    missing_cols = [c for c in required if c not in df.columns]
+    if missing_cols:
+        import warnings
+        warnings.warn(
+            f"'{sheet_name}' sheet is missing column(s) {missing_cols}; "
+            "oee_distribution will be empty.",
+            stacklevel=2,
+        )
+        return {}
+
+    result: dict[str, list[OEEBinConfig]] = {}
+    for _, row in df.iterrows():
+        line = str(row.get("Line", "")).strip()
+        if not line or line.lower() == "nan":
+            continue
+
+        bin_down_raw = row.get("Bin_down")
+        bin_up_raw = row.get("Bin_up")
+        prob_raw = row.get("Probability")
+        if pd.isna(bin_down_raw) or pd.isna(bin_up_raw) or pd.isna(prob_raw):
+            continue
+
+        result.setdefault(line, []).append(OEEBinConfig(
+            line=line,
+            bin_down=float(bin_down_raw),
+            bin_up=float(bin_up_raw),
+            probability=float(prob_raw),
+        ))
+
+    return result
+
+
 def _parse_shift_time_cell(raw) -> Optional[_dt.time]:
     """
     Parse one "Starts"/"Ends" cell from the Shifts sheet's top table.
@@ -2228,6 +2338,7 @@ def load_config(
         supermarkets          = _parse_supermarkets_sheet(xls),
         kanban_timing         = _parse_kanban_config_sheet(xls),
         shift_calendar        = _parse_shifts_sheet(xls),
+        oee_distribution      = _parse_oee_sheet(xls),
     )
 
     _validate(cfg)
@@ -2341,3 +2452,11 @@ if __name__ == "__main__":
     for ln in cfg.line_names:
         days = cfg.shift_calendar.availability.get(ln, {})
         print(f"  {ln}: {len(days)} configured day(s)")
+
+    n_oee_bins = sum(len(v) for v in cfg.oee_distribution.values())
+    print(f"\n--- OEE distribution ({n_oee_bins} bin(s) across {len(cfg.oee_distribution)} line(s)) ---")
+    for line, bins in cfg.oee_distribution.items():
+        total_p = round(sum(b.probability for b in bins), 6)
+        print(f"  {line}  (Σprobability = {total_p}):")
+        for b in bins:
+            print(f"    [{b.bin_down:.4f}, {b.bin_up:.4f}) -> p={b.probability}")
