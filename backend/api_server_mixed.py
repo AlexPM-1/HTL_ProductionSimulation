@@ -15,8 +15,9 @@ GET  /api/parameters       -> same shape as api_server.py's, read live
                                from SimConfig (sidebar inputs)
 POST /api/simulate_mixed   -> runs mixed_runner.run_mixed(), returns
                                { gantt, kpi_by_line, kpi_by_class,
-                                 card_flow, line_units_series, restmenge,
-                                 gate_status, push_kpi, push_delivery_log,
+                                 kpi_by_crew, card_flow, line_units_series,
+                                 restmenge, gate_status, push_kpi,
+                                 push_delivery_log,
                                  supermarket_overflow_log,
                                  push_unassigned_log, push_policy, summary }
 GET  /api/mixed/push_policy    -> current push policy knobs (live ctx
@@ -59,10 +60,14 @@ GET  /api/mixed/movement_state    -> time-indexed per-card occupancy:
                                    Also includes, per line, a time-indexed
                                    "production_status" ({"state":
                                    "producing"|"idle"|"off_shift",
-                                   "sachnummer", "sim_class", "since_t",
-                                   "possible_changeover"}) resolved from
-                                   kenv.gate_activity_log — see
-                                   mixed_runner.production_status_at().
+                                   "sachnummer", "sim_class", "crew_id",
+                                   "since_t", "possible_changeover"})
+                                   resolved from kenv.gate_activity_log —
+                                   see mixed_runner.production_status_at().
+                                   "crew_id" (v10) is which
+                                   crew_process(crew_id=...) instance was
+                                   holding the line's gate at that instant
+                                   — None whenever state isn't "producing".
                                    "off_shift" (v6) means this line isn't
                                    scheduled to run at t_s at all, per the
                                    workbook's "Shifts" sheet — distinct
@@ -73,6 +78,21 @@ GET  /api/mixed/movement_state    -> time-indexed per-card occupancy:
                                    non-empty); older/shift-less workbooks
                                    only ever report "producing"/"idle",
                                    exactly as before.
+GET  /api/mixed/crew_activity     -> chronological per-crew production
+                                   log — "production of crew 1",
+                                   "production of crew 2", etc., the
+                                   crew-based counterpart to filtering the
+                                   Gantt/KPI views by line. One entry per
+                                   completed unit (one pull card, or one
+                                   push chunk), each carrying line_id/
+                                   line_name/sachnummer/sim_class/
+                                   quantity/t_start/t_end (in the
+                                   requested time_unit) — straight off
+                                   kenv.gate_activity_log, optionally
+                                   filtered by crew_id and/or line_id.
+                                   Requires a prior POST
+                                   /api/simulate_mixed. See
+                                   mixed_crew_activity()'s own docstring.
 
 kpi_by_line vs kpi_by_class
 ----------------------------
@@ -133,6 +153,22 @@ null, derived by checking gates[line].current_rec.sachnummer against
 the same kanban_products/push_products sets _build_class_product_sets()
 already computes for kpi_by_class. No new field on LinePriorityGate
 was needed for this.
+
+gate_status[line].current_crew_id (v10) — which crew_process(crew_id=...)
+instance most recently held this line's gate, i.e. the crew_id of
+whichever kenv.gate_activity_log entry for this line has the latest
+t_end at the moment the run stopped. Same "last known, not literally
+live" caveat as current_rec (the run has already ended by the time this
+response is built) — None if this line never ran anything at all.
+
+kpi_by_crew — per crew_id (n_crews from mixed_runner.run_mixed(n_crews=...)),
+a pull/push unit-count + total-quantity breakdown plus which lines that
+crew actually worked, built from kenv.gate_activity_log grouped by
+crew_id (NOT from kenv.parts_out, unlike kpi_by_class — a GateActivityEntry
+already IS one crew's one turn-unit, so no product-set membership lookup
+is needed here). This is the "production of crew 1 / production of crew
+2" summary, the crew-based counterpart to kpi_by_line. See
+_build_kpi_by_crew()'s docstring for the exact shape.
 
 gate_status[line].is_on_shift (v6) — live snapshot of whether this line
 is on-shift at kenv.env.now (the instant the run stopped), via
@@ -272,6 +308,12 @@ def get_parameters(reload: bool = False):
         "n_push_products": len(_build_class_product_sets(cfg)[1]),
         "worker_options": [1, 2],
         "default_workers": DEFAULT_N_WORKERS,
+        # v10: crew count for the crew-based depletion model (mixed_runner
+        # .crew_process) — a crew can hold at most one line at a time, so
+        # more crews than lines just means some crews are always idle;
+        # the sidebar can offer up to len(lines) as a sane upper bound.
+        "crew_options": list(range(1, max(len(cfg.line_names), 1) + 1)),
+        "default_n_crews": 2,
         "default_day_start_hour": DAY_START_HOUR,
         "default_push_chunk_size": PUSH_CHUNK_SIZE,
         # v6: whether the loaded workbook's "Shifts" sheet actually
@@ -474,6 +516,74 @@ def _class_split_kpi(
         "push": _bucket(push_products),
         "unclassified_count": len(unclassified),  # flags sheet overlap/gaps, see docstring above
     }
+
+
+def _build_kpi_by_crew(kenv) -> dict:
+    """
+    Per-crew production summary — the "production of crew 1 / production
+    of crew 2" counterpart to kpi_by_line/kpi_by_class, built from
+    kenv.gate_activity_log (v10: every GateActivityEntry now carries
+    crew_id — see mixed_runner.GateActivityEntry) rather than from
+    kenv.parts_out, since a GateActivityEntry already IS one crew's one
+    completed turn-unit (one pull card, or one push chunk) — no
+    product-set membership lookup needed, unlike kpi_by_class.
+
+    Reads kenv.n_crews (set by run_mixed(n_crews=...) — see that
+    function's tail bookkeeping) so a crew that happened to never get any
+    work (e.g. more crews configured than lines exist) still gets a
+    zeroed-out entry, instead of silently disappearing the way inferring
+    crew count from "which crew_ids appear in the log" would.
+
+    Shape, keyed "crew_1", "crew_2", ... (1-based label, matching how
+    line_name keys already read to a frontend — crew_id itself, 0-based,
+    is included inside each entry for anything that needs the raw index):
+        {
+          "crew_1": {
+            "crew_id": 0,
+            "pull": {"n_units": int, "total_quantity": int},
+            "push": {"n_units": int, "total_quantity": int},
+            "n_units_total": int,
+            "total_quantity_total": int,
+            "lines_worked": [line_name, ...],   # sorted, distinct
+          },
+          ...
+        }
+    """
+    gate_log = getattr(kenv, "gate_activity_log", None) or []
+    n_crews = getattr(kenv, "n_crews", None)
+    if n_crews is None:
+        # Defensive fallback for a kenv from a run predating kenv.n_crews
+        # being set — infer from whatever crew_ids actually appear rather
+        # than 500ing (same "degrade gracefully" spirit as the other
+        # getattr-guarded push artifacts in this module).
+        seen = {getattr(e, "crew_id", None) for e in gate_log}
+        seen.discard(None)
+        n_crews = (max(seen) + 1) if seen else 0
+
+    id_to_name = {line.line_id: line.line_name for line in kenv.lines}
+
+    result: dict = {}
+    for crew_id in range(n_crews):
+        entries = [e for e in gate_log if getattr(e, "crew_id", None) == crew_id]
+
+        def _bucket(sim_class: str) -> dict:
+            subset = [e for e in entries if e.sim_class == sim_class]
+            return {
+                "n_units": len(subset),
+                "total_quantity": sum(e.quantity or 0 for e in subset),
+            }
+
+        result[f"crew_{crew_id + 1}"] = {
+            "crew_id": crew_id,
+            "pull": _bucket("pull"),
+            "push": _bucket("push"),
+            "n_units_total": len(entries),
+            "total_quantity_total": sum(e.quantity or 0 for e in entries),
+            "lines_worked": sorted({
+                id_to_name.get(e.line_id, str(e.line_id)) for e in entries
+            }),
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1636,6 +1746,15 @@ def mixed_movement_state(
 
 class SimulateMixedRequest(BaseModel):
     n_workers: int = Field(default=DEFAULT_N_WORKERS, ge=1, le=2)
+    n_crews: int = Field(
+        default=2, ge=1,
+        description="How many crew_process() workers share the plant's "
+                     "lines (v10 crew-based depletion model — see "
+                     "mixed_runner.crew_process). A crew holds at most "
+                     "one line at a time, so more crews than lines just "
+                     "leaves some crews idle; see /api/parameters' "
+                     "crew_options for a sane upper bound.",
+    )
     seed: int = 42
     day_start_hour: int = Field(default=DAY_START_HOUR, ge=0, le=23)
     day_length_s: float = DAY_LENGTH_S
@@ -1673,6 +1792,7 @@ def simulate_mixed(req: SimulateMixedRequest):
             EXCEL_PATH,
             SETUP_XLSX_PATH,
             n_workers=req.n_workers,
+            n_crews=req.n_crews,
             seed=req.seed,
             verbose=False,
             day_start_hour=req.day_start_hour,
@@ -1713,6 +1833,12 @@ def simulate_mixed(req: SimulateMixedRequest):
             kenv, line, kanban_products, push_products,
         )
 
+    # v10: per-crew production summary — see _build_kpi_by_crew()'s
+    # docstring. Read defensively (the helper itself already tolerates a
+    # kenv without gate_activity_log/n_crews) so this can't 500 an
+    # otherwise-successful run.
+    kpi_by_crew = _build_kpi_by_crew(kenv)
+
     # --- Class-1-only diagnostics (see module docstring) ---------------
     # shortfall_log: mirrors the snapshot_log/event_log convention this
     # server already relies on — mixed_runner.py needs to pass a
@@ -1752,11 +1878,26 @@ def simulate_mixed(req: SimulateMixedRequest):
         if _epoch_for_status is not None else None
     )
 
+    # v10: which crew most recently held each line's gate — the latest
+    # (by t_end) gate_activity_log entry for that line_id. Same "last
+    # known at the instant the run stopped, not literally live" caveat as
+    # current_rec below (the run has already finished by the time this
+    # response is built).
+    _gate_log_for_status = getattr(kenv, "gate_activity_log", None) or []
+    _last_entry_by_line: dict[int, "object"] = {}
+    for _e in _gate_log_for_status:
+        cur = _last_entry_by_line.get(_e.line_id)
+        if cur is None or _e.t_end > cur.t_end:
+            _last_entry_by_line[_e.line_id] = _e
+
     gate_status = {
         line.line_name: {
             "current_rec": getattr(kenv.gates[line.line_id].current_rec, "sachnummer", None),
             "current_class": _gate_current_class(
                 getattr(kenv.gates[line.line_id].current_rec, "sachnummer", None)
+            ),
+            "current_crew_id": getattr(
+                _last_entry_by_line.get(line.line_id), "crew_id", None
             ),
             "last_activity_h": kenv.gates[line.line_id].last_activity_t / 3600.0,
             # v6: is this line on-shift right NOW (i.e. at kenv.env.now,
@@ -1812,6 +1953,7 @@ def simulate_mixed(req: SimulateMixedRequest):
         "gantt": gantt,
         "kpi_by_line": kpi_by_line,
         "kpi_by_class": kpi_by_class,
+        "kpi_by_crew": kpi_by_crew,
         "card_flow": card_flow,
         "line_units_series": line_units_series,
         "restmenge": restmenge_json,
@@ -1823,6 +1965,7 @@ def simulate_mixed(req: SimulateMixedRequest):
         "push_policy": push_policy_json,
         "summary": {
             "n_workers": req.n_workers,
+            "n_crews": req.n_crews,
             "seed": req.seed,
             "day_start_hour": req.day_start_hour,
             "push_chunk_size": req.push_chunk_size,
@@ -2007,3 +2150,88 @@ def mixed_card_trace(
     )
     payload["day_start_hour"] = _LAST_MIXED_DAY_START_HOUR
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Crew activity (v10) — "production of crew 1", "production of crew 2",
+# the crew-based counterpart to filtering by line_id elsewhere on this
+# page. Built straight from kenv.gate_activity_log, which now carries
+# crew_id on every entry (see mixed_runner.GateActivityEntry / crew_process).
+# ---------------------------------------------------------------------------
+
+_TIME_DIVISORS: dict[str, float] = {"h": 3600.0, "min": 60.0, "s": 1.0}
+
+
+@app.get("/api/mixed/crew_activity")
+def mixed_crew_activity(
+    crew_id: Optional[int] = None,
+    line_id: Optional[int] = None,
+    day_index: Optional[int] = None,
+    hour: Optional[int] = None,
+    time_unit: str = "h",
+):
+    """
+    Chronological production log, optionally scoped to one crew and/or
+    one line — "show me what crew 1 produced" / "show me what crew 2
+    produced on HTL5", mirroring how the rest of this page already lets
+    the frontend scope a view to one line via `line_id`.
+
+    Each entry is one completed unit of production (one pull card, or
+    one push chunk) — the same granularity kenv.gate_activity_log already
+    records, just filtered and time-unit-converted here rather than
+    exposed raw. Fields:
+        crew_id, line_id, line_name, sachnummer, sim_class ("pull"|"push"),
+        quantity, possible_changeover, t_start, t_end   (t_start/t_end in
+        the requested time_unit, matching the Gantt/KPI endpoints'
+        own convention)
+
+    `summary` alongside `entries` is the SAME per-crew breakdown
+    /api/simulate_mixed's top-level `kpi_by_crew` returns (see
+    _build_kpi_by_crew) — included here too so a frontend can render
+    "crew 1: 34 pull cards, 12 push chunks across HTL3, HTL5" without a
+    second round-trip, computed over the FULL run regardless of any
+    day_index/hour/line_id/crew_id filter applied to `entries` below
+    (filters only narrow the chronological list, not the summary
+    figures — a caller wanting a filtered summary should aggregate
+    `entries` client-side).
+
+    day_index/hour: same windowing convention as every other /api/mixed/*
+    endpoint on this page (see this module's own windowing note above
+    _require_mixed_run()) — 0-based day from sim start, optional 0-23
+    hour to narrow further. Omit both for the whole run.
+    """
+    kenv, _cfg = _require_mixed_run()
+    if time_unit not in ("h", "min", "s"):
+        raise HTTPException(status_code=400, detail="time_unit must be one of: h, min, s")
+    divisor = _TIME_DIVISORS[time_unit]
+
+    window = _day_window_s(day_index, hour)
+    id_to_name = {line.line_id: line.line_name for line in kenv.lines}
+    gate_log = getattr(kenv, "gate_activity_log", None) or []
+
+    entries = []
+    for e in gate_log:
+        if crew_id is not None and getattr(e, "crew_id", None) != crew_id:
+            continue
+        if line_id is not None and e.line_id != line_id:
+            continue
+        if window is not None and not (window[0] <= e.t_start < window[1]):
+            continue
+        entries.append({
+            "crew_id": getattr(e, "crew_id", None),
+            "line_id": e.line_id,
+            "line_name": id_to_name.get(e.line_id, str(e.line_id)),
+            "sachnummer": e.sachnummer,
+            "sim_class": e.sim_class,
+            "quantity": e.quantity,
+            "possible_changeover": e.possible_changeover,
+            "t_start": e.t_start / divisor,
+            "t_end": e.t_end / divisor,
+        })
+    entries.sort(key=lambda x: x["t_start"])
+
+    return {
+        "entries": entries,
+        "summary": _build_kpi_by_crew(kenv),
+        "time_unit": time_unit,
+    }

@@ -18,88 +18,123 @@ This file reuses:
     push work yields the line every PUSH_CHUNK_SIZE pieces instead of
     monopolising it for a whole order)
 
-Architecture
-------------
-  - LinePriorityGate: a simpy.PriorityResource(capacity=1) per line.
-    class-1 (Kanban) requests priority=0, class-2 (push) requests
-    priority=1. Non-preemptive: SimPy priority resources only reorder
-    the WAITING queue, they never yank a resource out from something
-    already running — which is exactly "a class-2 unit in progress must
-    finish before class-1 starts" from the spec.
-  - KanbanChuteResource (entities_resources_v4.py, one per line):
-    a shared, priority-ordered, frozen-zone-aware admission queue. Both
-    classes enqueue into it (pull via push_batch(), push via
-    push_chunk()/push_rush_entry()); each class only ever DRAINS its own
-    entries — pull via chute.pop_next() (kanban_process_logic.py,
-    unmodified — see _install_pull_only_chute_view()), push via
-    chute.pop_next_of_class("push") (push_drain_process(), below). The
-    frozen zone (PushPolicyConfig.frozen_zone_cards, set on every chute
-    in run_mixed()) protects the front of this ONE shared queue from
-    reordering/preemption by either class.
-  - push_dispatch_process(): one per CustomerDemand row. Sleeps until
-    the row enters its push_visibility_days window, resolves
-    PRODUCT_MATRIX-priority-ordered candidate lines, then either finds a
-    free compatible line (normal path) or — once within
-    rush_threshold_h of the row's due date — force-assigns the least
-    busy compatible line and jumps the queue via push_rush_entry(). See
-    that function's docstring for the full rule set.
-  - push_drain_process(): one per line. Peeks (not pops) that line's next
-    push entry off the chute, secures the shared LinePriorityGate at
-    priority=1, and only then pops it and runs it through run_one_order()
-    — see that function's docstring (v9 chute-early-pop-correction) for
-    why the pop is deferred until admission is secured, and why the old
-    10-minute idle-timeout wait was removed.
+Architecture — crew-based drain (v10)
+--------------------------------------
+Movement 1 (chute FILLING — unchanged by this version): pull cards
+arrive via kanban_process_logic_v2's own withdrawal/collection-box path
+calling KanbanChuteResource.push_batch(); push chunks arrive via
+push_dispatch_process() calling push_chunk()/push_rush_entry(). Chute
+ordering (priority ranking, the frozen zone, rush placement) is entirely
+this movement's responsibility — see KanbanChuteResource's own
+docstring. Nothing below ever reorders or reaches past the front of a
+line's queue; it only ever looks at, and consumes from, the front.
+
+Movement 2 (chute DEPLETION — this version's change): a fixed pool of
+`n_crews` crew_process() instances (run_mixed(n_crews=...)) is the ONLY
+consumer of every line's chute. Each crew, in a loop:
+  1. Rule 1/2 (_select_line_for_crew): among lines that are on-shift
+     (ShiftCalendar / PushSchedulerContext.is_line_on) and not currently
+     held by another crew, picks the one with the most pending cards
+     (KanbanChuteResource.total_pending_cards, pull+push combined). A
+     crew already holding a line only moves to a DIFFERENT line if it is
+     STRICTLY more loaded — equal load, or nothing more loaded, means
+     stay. Two crews becoming idle at the same simulated instant are
+     arbitrated by plain SimPy same-tick process ordering (see that
+     function's docstring) — no extra bookkeeping needed.
+  2. Holds that line's LinePriorityGate (now a plain per-line mutex —
+     see below) and runs ONE "turn": the whole push order if a push
+     entry is at the chute's front (_run_push_turn), or up to a 4-card
+     same-product_number pull batch if a pull entry is at the front
+     (_run_pull_turn) — carrying over an incomplete batch's count across
+     visits via PendingPullBatch/ctx.pending_batches (Rule 1.a) whenever
+     the chute's front doesn't currently offer more of that product;
+     nothing is ever searched for out of order.
+  3. Re-runs Rule 1/2 after every turn to decide whether to keep working
+     this line or release it and move to a more-loaded one.
+An idle crew (no on-shift line has any pending work) blocks on one
+shared `ctx.activity_signal`, woken by ANY line's chute gaining new work
+(see _install_crew_chute_hooks) or any crew finishing a turn.
+
+  - LinePriorityGate: now a plain simpy.Resource(capacity=1) per line —
+    a single mutex, not a priority queue. The old priority=0/1 (class-1
+    vs class-2) split existed only to arbitrate two INDEPENDENT
+    per-class drain loops fighting over one line; with crews as the
+    sole consumer of a line at any moment, there is nothing left to
+    arbitrate by priority. `current_rec` (for changeover()) and
+    `last_activity_t`/`touch()` are unchanged and still shared across
+    whichever class a crew is currently running on that line.
+  - KanbanChuteResource (entities_resources_v5.py, one per line): the
+    shared, frozen-zone-aware admission queue movement 1 fills and
+    crew_process() drains, via peek_next_of_class()/pop_next_of_class()
+    directly — chute.pop_next() itself is neutralised (always returns
+    None, see _install_crew_chute_hooks) since kanban_process_logic_v2's
+    own production_trigger_process is still spawned (for
+    withdrawal_process/collection_box_emptying_process's sake) but must
+    never be allowed to drain a card itself any more.
+  - push_dispatch_process(): one per CustomerDemand row — UNCHANGED
+    (movement 1, push side). Sleeps until the row enters its
+    push_visibility_days window, resolves PRODUCT_MATRIX-priority
+    candidate lines, then either finds a free compatible line (normal
+    path) or — within rush_threshold_h of the row's due date —
+    force-assigns the least-busy compatible line via push_rush_entry().
   - _compute_shared_epoch(): anchors t=0 for BOTH sheets onto one shared
     clock, since the two sheets are read independently and must not each
     invent their own epoch.
 
-Class-1 gate hook — wired
---------------------------
-kanban_process_logic.production_trigger_process only touches stations
-through one call, `run_one_kanban_batch(...)`. `_install_kanban_gate_hook()`
-monkeypatches that name (resolved from kanban_process_logic's own module
-globals at call time, so this is safe — every existing internal caller
-picks up the wrap automatically, nothing outside kanban_process_logic
-calls it) to acquire the same per-line `LinePriorityGate` at priority=0
-before running a batch, mirroring push_drain_process's priority=1
-acquisition. `collection_box_emptying_process` and `_withdraw_one_card`
-were deliberately NOT touched — they only move KanbanCard objects between
-the collection box / batch collector / chute, never a station, so they
-don't participate in line-level admission.
-
 Event-log class tagging (pull vs push) — wired
 -------------------------------------------------
-kenv.event_log is ONE list shared by every line's push_drain_process and
-every line's (gate-wrapped) run_one_kanban_batch call, so a ScheduleEvent
-by itself carries no signal of which class produced it. Both call sites
-in this module tag events post-hoc:
-  - snapshot len(event_log) right after acquiring that line's
-    LinePriorityGate (i.e. once we're guaranteed to be the only class
-    executing on this line_id — capacity=1, non-preemptive);
-  - after the gated call returns, walk event_log[snapshot:] and set
+kenv.event_log is ONE list shared by every crew, so a ScheduleEvent by
+itself carries no signal of which class produced it. Both
+_run_one_pull_card() and _run_push_turn() tag events post-hoc:
+  - snapshot len(event_log) right before the gated run_one_kanban_batch/
+    run_one_order call (a crew holding a line's gate is the ONLY thing
+    that can touch that line_id's stations at that moment — capacity=1);
+  - after the call returns, walk event_log[snapshot:] and set
     .sim_class on entries whose line_id matches ours.
 Filtering by line_id (not just by index) is required because the SAME
-window can contain events from OTHER lines' processes that interleaved
-their own appends while we were yielded — SimPy is cooperative, so that
+window can contain events from OTHER lines' crews that interleaved their
+own appends while we were yielded — SimPy is cooperative, so that
 routinely happens.
 
-Still worth validating once this runs against real data (not blocking,
-just noted): the wrapper reads/writes `gate.current_rec` instead of
-production_trigger_process's own (now practically unused) local
-`current_rec`, so changeover() sees ONE "what's set up on this line"
-state shared by both classes. This assumes `run_one_kanban_batch` calls
-changeover() the same way `run_one_order()` does (same signature
-family strongly suggests it, but I haven't seen that function's body to
-confirm) — if it doesn't, changeover costs on the class-1 side may not
-reflect the class-2 product that just ran, or vice versa.
+Event-log crew tagging (v10) — wired the same way
+--------------------------------------------------
+Same snapshot-and-walk, same call sites, run right alongside the
+sim_class tagging above: each ScheduleEvent's .crew_id gets set to the
+calling crew_process()'s own crew_id (a plain parameter both
+_run_one_pull_card() and _run_push_turn() already receive) for every
+entry in event_log[snapshot:] whose line_id matches ours and whose
+crew_id is still None. This is what lets schedule_events.
+build_gantt_payload()'s "crewId" on each Gantt job segment actually
+carry a value — see ScheduleEvent.crew_id's own docstring in
+schedule_events.py for the contract this fulfils, and
+GateActivityEntry.crew_id below for the (separately-populated, always
+already-set) crew_id that gate_activity_log / kpi_by_crew / the
+/api/mixed/crew_activity endpoint read instead.
 
 STATUS
 ------
 Everything described above is live, including the exotic Supermarket
 deposit + overflow-flag tracking (see ExoticSupermarketTracker's
 module-level caveat: it's currently a self-contained bookkeeping
-structure, not yet wired into entities_resources_v4.py's real pull-side
+structure, not yet wired into entities_resources_v5.py's real pull-side
 Supermarket resources).
+
+ASSUMPTIONS FLAGGED FOR VERIFICATION (ported from a reference copy of
+kanban_process_logic.py's production_trigger_process/run_one_kanban_batch
+shown alongside this refactor, not from reading the real
+kanban_process_logic_v2.py module):
+  - `_make_kanban_order_record(rt, line_name, product_type, quantity)`
+    and `_return_card_to_supermarket(rt, kenv, sm, card, t, line_name,
+    line_id, verbose)` exist in kanban_process_logic_v2 with these exact
+    signatures — _run_one_pull_card() (below) calls them directly, since
+    production_trigger_process (which used to own this orchestration) is
+    now permanently neutralised.
+  - Consecutive push ChuteEntry objects of the same product_type,
+    dispatched back-to-back by push_dispatch_process for one
+    CustomerDemand row, are a reasonable stand-in for "one push order"
+    when deciding how much a push turn takes (_run_push_turn) — this has
+    not been checked against a scenario where two DIFFERENT push orders
+    of the same product happen to sit adjacent in one line's chute.
 
 Shifts / line on-off (v6) — wired
 ----------------------------------
@@ -111,32 +146,30 @@ ShiftCalendar with the "no Shifts sheet at all -> every line always on"
 fallback baked in, so nothing downstream needs to special-case an older
 workbook. This module folds in the epoch conversion (sim-time seconds ->
 wall-clock) on top of those via PushSchedulerContext.is_line_on() /
-seconds_until_on() — the only two shift-aware entry points push
-processes in this file use; the pull side (_install_kanban_gate_hook)
-does its own epoch conversion since production_trigger_process never
-goes through PushSchedulerContext at all.
+seconds_until_on() — the only shift-aware entry points crew_process()
+uses. Card withdrawal from the supermarket into the chute happens
+upstream, inside kanban_process_logic_v2.py, and is untouched by this
+change — it is never gated by shift state.
 
-Two rules, three integration points:
+Two rules, two integration points:
   - "Off lines cannot be used": push_dispatch_process's line search
     (rule 4) and its 12h-rush override (rule 6) both exclude off-shift
     lines from candidacy — including rush, which is a confirmed decision,
     not an oversight: an urgent order still just keeps retrying hourly
     (falling back to rule 5's wait) if every compatible line happens to
     be off when it goes urgent, rather than forcing an off line to run.
+    _select_line_for_crew() applies the identical exclusion on the
+    depletion side — an off-shift line is never a candidate for Rule 1/2,
+    regardless of how loaded its chute is.
   - "Cards can leave the supermarket, but production starts when the
-    line is on again": _gated_run_one_kanban_batch (the class-1 gate
-    hook) waits out an off-shift period BEFORE requesting the line's
-    gate, so withdrawal — which happens upstream, inside
-    kanban_process_logic_v2.py, and is untouched by this change — is
-    never blocked, only the station-touching work this hook wraps is.
-    push_drain_process waits on the identical on-shift condition before
-    IT requests the gate too, so an off period is symmetric across both
-    classes: neither one holds the gate, or even asks for it, while the
-    line is off. A pull batch simply sitting on the chute is not, by
-    itself, allowed to turn an off line on — _gated_run_one_kanban_batch
-    loops on is_line_on() until it's genuinely true (re-checking after
-    every wake, including the "no known next on-time" edge case) rather
-    than waiting once and proceeding regardless.
+    line is on again": crew_process() waits out an off-shift period
+    (looping on is_line_on(), re-checking after every wake — including
+    the "no known next on-time" edge case) BEFORE running a turn on a
+    line it's holding, so a pull batch or push chunk simply sitting on
+    the chute is never, by itself, enough to start production on an off
+    line. A turn already in progress when a shift ends is NOT preempted
+    — the calendar is authoritative only for the decision to START the
+    next unit of work, exactly as before.
 """
 
 from __future__ import annotations
@@ -167,7 +200,7 @@ DAY_LENGTH_S: float = 24 * 3600.0
 DRAIN_DAYS: int = 1
 SIM_HORIZON_S: float = 24 * 3600.0
 
-# How often _gated_run_one_kanban_batch re-polls is_line_on() for a line
+# How often _run_one_pull_card re-polls is_line_on() for a line
 # that has no further on-transition in the configured shift calendar
 # horizon at all (see that function's off-line correction) — only ever
 # used in that edge case; a normal off period is woken exactly at its
@@ -385,9 +418,15 @@ def _compute_shared_epoch(cfg: SimConfig, day_start_hour: int) -> _dt.datetime:
 
 
 # ---------------------------------------------------------------------------
-# LinePriorityGate — the shared admission point stations must be entered
-# through, by BOTH classes, once the missing kanban hook (see module
-# docstring) exists. Only class-2 uses it directly today.
+# LinePriorityGate — the per-line mutex crew_process() holds while
+# running a turn on that line. Kept as a plain simpy.Resource(capacity=1)
+# rather than a priority resource (see module docstring's v10 note): the
+# old priority=0/1 split existed only to arbitrate two independent
+# per-class drain loops fighting over one line — with crews as the sole
+# consumer, there is only ever one kind of requester per line at a time,
+# so nothing is left to prioritize. Class name kept unchanged (rather
+# than renamed to e.g. LineLock) to limit blast radius for any external
+# code (e.g. a frontend/API layer) already reading kenv.gates.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -395,22 +434,18 @@ class LinePriorityGate:
     """
     Per-line mutex: whoever holds it currently owns the right to run one
     "unit" of production through this line's stations. Backed by
-    simpy.PriorityResource(capacity=1) — priority=0 for class-1 (Kanban),
-    priority=1 for class-2 (push). Non-preemptive by construction (SimPy
-    priority resources reorder only the wait queue, never interrupt a
-    already-granted request), which is exactly the "must finish the
-    current unit before class-1 starts" rule.
+    simpy.Resource(capacity=1).
 
-    last_activity_t : env.now() of the last time EITHER class finished a
-        unit here. No longer read by any idle-timeout logic (that rule
-        was deleted — class-2 chunks now run back-to-back with no gap;
-        see push_drain_process) — kept purely as a bookkeeping timestamp
-        for anything that wants "when did this line last do something".
+    last_activity_t : env.now() of the last time a crew finished a unit
+        here. Not read by any control-flow logic — kept purely as a
+        bookkeeping timestamp for anything that wants "when did this
+        line last do something".
     current_rec : OrderRecord last executed on this line, across BOTH
-        classes — the changeover() argument. Only class-2 writes this
-        today (see module docstring "NOT yet handled").
+        classes — the changeover() argument. Read/written by whichever
+        crew is currently holding this line, regardless of whether it's
+        running a push or pull turn — see _run_push_turn/_run_one_pull_card.
     """
-    resource: simpy.PriorityResource
+    resource: simpy.Resource
     last_activity_t: float = 0.0
     current_rec: Optional[OrderRecord] = None
 
@@ -419,16 +454,39 @@ class LinePriorityGate:
 
 
 @dataclass
+class PendingPullBatch:
+    """
+    One line's "not yet reached 4 cards" pull-batch memory — Rule 1.a's
+    carryover. Created fresh (taken=0) whenever a pull turn starts on a
+    product_number with no open record for this line (or a different one
+    than what's now at the chute's front — see _run_pull_turn);
+    persisted here, keyed by line_id, whenever a turn stops short of 4
+    because the chute's front no longer offers more of that
+    product_number. Consulted (and completed, never restarted) by
+    whichever crew next works this line and finds the same
+    product_number back at the front, however much of the chute filled
+    with OTHER products in between. Cleared the instant taken reaches 4.
+
+    Deliberately NOT scoped per-crew: which crew resumes an open batch
+    is irrelevant — the chute (movement 1) decides ordering, not the
+    crew, so this state belongs to the line, not to whichever crew
+    happens to be holding it at any given moment.
+    """
+    product_type: str
+    taken: int = 0
+
+
+@dataclass
 class GateActivityEntry:
     """
     One completed hold of a line's LinePriorityGate — i.e. one contiguous
-    interval during which *something* (a class-1 Kanban batch or a
-    class-2 push chunk) actually occupied the line's stations, start to
-    finish. Appended once per hold, AFTER it ends, by the two call sites
-    that already acquire/release gate.resource around real production:
-    _gated_run_one_kanban_batch (class-1) and push_drain_process
-    (class-2) — see each site's own comment for exactly where t_start/
-    t_end are captured.
+    interval during which *something* (a pull card or a push chunk,
+    whichever a crew was running) actually occupied the line's stations,
+    start to finish. Appended once per hold, AFTER it ends, by the two
+    call sites that already acquire/release gate.resource around real
+    production: _run_one_pull_card (pull) and _run_push_turn (push) —
+    see each site's own comment for exactly where t_start/t_end are
+    captured.
 
     This is the movement/production-status counterpart to
     ExoticSlotSnapshot / PushChuteLogEntry / kanban_process_logic.
@@ -439,9 +497,10 @@ class GateActivityEntry:
     PushChuteTracker.snapshot() has vs. push_chute_entries_at(), or
     ExoticSupermarketTracker's slots vs. exotic_snapshot_log).
 
-    Since gate.resource is a simpy.PriorityResource(capacity=1) shared by
-    BOTH classes, entries for the same line_id never overlap — trivial to
-    replay with a single linear scan (see production_status_at()).
+    Since gate.resource is a simpy.Resource(capacity=1) — one crew at a
+    time per line, regardless of class — entries for the same line_id
+    never overlap — trivial to replay with a single linear scan (see
+    production_status_at()).
 
     possible_changeover: True if this entry's sachnummer differs from
     whatever gate.current_rec was immediately before this hold started
@@ -466,6 +525,12 @@ class GateActivityEntry:
     line_id: int
     sachnummer: str
     sim_class: str              # "pull" | "push"
+    crew_id: Optional[int] = None   # which crew_process(crew_id=...) ran
+                                     # this unit — see crew_process(),
+                                     # _run_one_pull_card(), _run_push_turn().
+                                     # None only for entries from a kenv
+                                     # produced before this field existed
+                                     # (shouldn't occur going forward).
     possible_changeover: bool = False
     quantity: Optional[int] = None
 
@@ -488,11 +553,17 @@ def production_status_at(
 
     Returns one of:
       {"state": "producing", "sachnummer": str, "sim_class": "pull"|"push",
-       "since_t": float, "possible_changeover": bool}
+       "crew_id": int, "since_t": float, "possible_changeover": bool}
       {"state": "idle", "sachnummer": None, "sim_class": None,
-       "since_t": float | None, "possible_changeover": False}
+       "crew_id": None, "since_t": float | None, "possible_changeover": False}
       {"state": "off_shift", "sachnummer": None, "sim_class": None,
-       "since_t": float | None, "possible_changeover": False}
+       "crew_id": None, "since_t": float | None, "possible_changeover": False}
+
+    "crew_id" (v10): which crew_process(crew_id=...) instance was
+    holding this line's gate during the active entry — None whenever
+    state isn't "producing" (a crew only exists in this log's record
+    while actually holding a gate; there is no "idle crew" entry to
+    attribute an idle/off_shift gap to).
 
     "idle" covers both a genuine gap between two holds (chute momentarily
     drained on both sides, but the line IS on-shift) and any time before
@@ -522,7 +593,7 @@ def production_status_at(
     been "idle" — it never overrides "producing". A batch/chunk that
     started while on-shift and is still finishing after its shift's
     window closes is still, correctly, reported as "producing": neither
-    _gated_run_one_kanban_batch nor push_drain_process preempt a
+    _run_one_pull_card nor _run_push_turn (via crew_process) preempt a
     unit already in progress when its shift ends (see each's own v6
     comment) — a line's gate hold, once granted, is authoritative over
     the calendar for the remainder of that hold.
@@ -542,6 +613,7 @@ def production_status_at(
             "state": "producing",
             "sachnummer": active.sachnummer,
             "sim_class": active.sim_class,
+            "crew_id": active.crew_id,
             "since_t": active.t_start,
             "possible_changeover": active.possible_changeover,
         }
@@ -556,6 +628,7 @@ def production_status_at(
                 "state": "off_shift",
                 "sachnummer": None,
                 "sim_class": None,
+                "crew_id": None,
                 "since_t": last_end,
                 "possible_changeover": False,
             }
@@ -564,211 +637,26 @@ def production_status_at(
         "state": "idle",
         "sachnummer": None,
         "sim_class": None,
+        "crew_id": None,
         "since_t": last_end,
         "possible_changeover": False,
     }
 
 
 # ---------------------------------------------------------------------------
-# Class-1 hook — now wired.
-#
-# production_trigger_process (kanban_process_logic.py) only touches
-# stations through ONE call: `run_one_kanban_batch(kenv, line_id,
-# current_rec, order_rec, n_workers, on_finish, verbose, event_log=...)`.
-# Everything else in that loop (chute draining, on_finish/card-recycling,
-# the `signal.get()` block-until-woken wait) is Kanban-internal
-# bookkeeping that never seizes a station, so it correctly does NOT need
-# the gate.
-#
-# production_trigger_process calls run_one_kanban_batch as a bare name,
-# resolved from kanban_process_logic's own module globals at call time —
-# so wrapping it via monkeypatch (rather than copying
-# production_trigger_process's body, which would risk silently drifting
-# out of sync with the real chute/collection-box logic) is both correct
-# and safe: every existing caller inside kanban_process_logic picks up
-# the wrapped version automatically, and nothing outside this process
-# calls run_one_kanban_batch directly (push never does — it only calls
-# run_one_order).
-#
-# The wrapper also fixes the changeover-state sharing gap: it ignores
-# production_trigger_process's own (now-vestigial) local `current_rec`
-# and reads/writes `gate.current_rec` instead — the same object
-# push_drain_process reads/writes — so changeover() sees ONE "what's set
-# up on this line right now" regardless of which class ran last.
-# ---------------------------------------------------------------------------
-
-def _install_kanban_gate_hook(
-    gates: dict[int, LinePriorityGate],
-    epoch: _dt.datetime,
-    gate_activity_log: Optional[list["GateActivityEntry"]] = None,
-) -> None:
-    """
-    Monkeypatch kanban_process_logic.run_one_kanban_batch so every call
-    made from production_trigger_process acquires gates[line_id].resource
-    at priority=0 before touching stations, and releases it (after
-    updating gate.current_rec / gate.last_activity_t) once the batch is
-    done. Idempotent-ish in spirit but NOT safe to call twice in the same
-    process without re-importing kanban_process_logic first — call this
-    exactly once, before env.run(), and before any process that might
-    already be mid-call into the original function.
-
-    epoch: the same shared wall-clock epoch every other v6 shift lookup
-    in this module uses (see _compute_shared_epoch / PushSchedulerContext
-    .epoch) — needed here because kanban_process_logic's
-    production_trigger_process calls run_one_kanban_batch directly
-    (bypassing PushSchedulerContext entirely), so this hook is the only
-    place on the pull side that can convert kenv.env.now to a wall-clock
-    instant for the "is this line on-shift" check below.
-
-    v6 shift on/off (new): card withdrawal from the supermarket into the
-    chute happens upstream of this hook, inside
-    kanban_process_logic_v2.py, and is intentionally left ungated by this
-    change — "kanban cards can be taken out of the supermarket, but
-    production starts when the line is on again". Only the
-    station-touching work this hook wraps waits for on-shift, and it
-    waits BEFORE requesting gates[line_id] (not after acquiring it) —
-    see _gated_run_one_kanban_batch's inline comment for why.
-
-    gate_activity_log: pass a list in (caller-owned, same by-reference
-    pattern as snapshot_log/exotic_snapshot_log elsewhere in this module)
-    to collect one GateActivityEntry per completed batch — see that
-    class's docstring. t_start is captured right after the gate is
-    granted (production actually begins, including any leading
-    changeover) — i.e. AFTER any shift-off wait, not before, so
-    GateActivityEntry.t_start still means what it always has: the first
-    instant this batch could touch a station, not when it was merely
-    requested. t_end right after the batch itself completes, before the
-    gate is released. Omit (leave None) to skip this bookkeeping
-    entirely — the gate itself works identically either way.
-    """
-    import kanban_process_logic_v2 as kpl
-
-    if getattr(kpl.run_one_kanban_batch, "_mixed_gate_wrapped", False):
-        return  # already installed — avoid double-wrapping on repeat calls
-
-    _original = kpl.run_one_kanban_batch
-
-    # line_id -> line_name is static for a kenv's lifetime; cache it on
-    # first lookup rather than re-scanning kenv.lines on every batch.
-    _line_name_cache: dict[int, str] = {}
-
-    def _line_name_for(kenv, line_id: int) -> str:
-        name = _line_name_cache.get(line_id)
-        if name is None:
-            name = next(l.line_name for l in kenv.lines if l.line_id == line_id)
-            _line_name_cache[line_id] = name
-        return name
-
-    def _gated_run_one_kanban_batch(kenv, line_id, current_rec, order_rec,
-                                     n_workers, on_finish, verbose, event_log=None):
-        gate = gates[line_id]
-
-        # v6 shift on/off — wait for the line to be on-shift BEFORE
-        # requesting the gate, not after. There is nothing productive
-        # either side (pull here, or push in push_drain_process) could do
-        # with the gate while the line is off — push_drain_process waits
-        # on the exact same on-shift condition before IT ever requests
-        # the gate too — so acquisition order between pull and push isn't
-        # affected either way; waiting first just keeps the gate free
-        # (LinePriorityGate.current_rec / last_activity_t) instead of
-        # holding it, unused, for a potentially long off-shift stretch.
-        #
-        # off-line correction: a pull batch simply sitting on the chute
-        # (already popped by production_trigger_process, waiting here to
-        # actually run) must never be enough, by itself, to start
-        # production on an off-shift line — "off lines cannot be used"
-        # has no exception for pull, exactly like push. The previous
-        # version only checked is_line_on() ONCE and then fell straight
-        # through to requesting the gate: if the calendar had no further
-        # on-transition at all (next_line_on_transition() returning None
-        # — e.g. this line is off for the rest of the configured
-        # horizon), it skipped the wait entirely and requested the gate
-        # anyway, i.e. it ran the batch on a line that was, and would
-        # remain, off. Fixed by looping: keep re-checking is_line_on()
-        # after every wait, and NEVER reach the gate request while the
-        # line is still off — a batch that arrived here just waits
-        # (re-polling on a bounded interval when the calendar has no
-        # known next on-time) rather than being allowed through.
-        line_name = _line_name_for(kenv, line_id)
-        while True:
-            now_dt = epoch + _dt.timedelta(seconds=kenv.env.now)
-            if kenv.is_line_on(line_name, now_dt):
-                break
-            wait_until = kenv.next_line_on_transition(line_name, now_dt)
-            if wait_until is not None:
-                yield kenv.env.timeout((wait_until - now_dt).total_seconds())
-            else:
-                # This line never turns on again within the configured
-                # calendar horizon (a workbook with no shift calendar at
-                # all would already have made is_line_on() return True
-                # above, so that case can't reach here). There's nothing
-                # to wait FOR, but the line must still stay off — poll on
-                # a bounded interval instead of guessing a horizon or
-                # (as before) giving up and running anyway. Only a
-                # Shifts-sheet edit + reload can ever unstick this batch.
-                yield kenv.env.timeout(_OFF_LINE_REPOLL_S)
-            # Loop back and re-check: the on-transition we just waited
-            # for might be a very short on-window that's already closed
-            # again by the time we wake, and the previous version's
-            # single check-then-fall-through couldn't catch that either.
-
-        with gate.resource.request(priority=0) as req:
-            yield req
-            t_start = kenv.env.now
-            possible_changeover = (
-                gate.current_rec is None
-                or getattr(gate.current_rec, "sachnummer", None) != order_rec.sachnummer
-            )
-            # Tag events emitted by THIS call as "pull", without touching
-            # event_log's identity or the process functions themselves.
-            # event_log is one list shared by every line's push AND pull
-            # process, so a naive "everything appended between before/after
-            # snapshot is mine" assumption is wrong whenever another line's
-            # process interleaves an append while we're yielded (SimPy is
-            # cooperative — that WILL happen). We only mark entries whose
-            # line_id matches ours: LinePriorityGate has capacity=1 per
-            # line, so while we hold gates[line_id] no other caller (pull
-            # or push) can be mid-execution for this same line_id — any
-            # event carrying this line_id that shows up in the window is
-            # provably ours, regardless of what other lines wrote in
-            # between. This is why tagging happens here (read-only w.r.t.
-            # the event objects' own class fields) instead of by swapping
-            # kenv.event_log to a scratch list, which previously caused
-            # concurrently-running lines to write into the wrong list and
-            # stall (cards not released / push stuck).
-            _start_idx = len(event_log) if event_log is not None else 0
-            result = yield from _original(
-                kenv, line_id, gate.current_rec, order_rec, n_workers,
-                on_finish, verbose, event_log=event_log,
-            )
-            if event_log is not None:
-                for _ev in event_log[_start_idx:]:
-                    if _ev.line_id == line_id and _ev.sim_class is None:
-                        _ev.sim_class = "pull"
-            if result is not None:
-                gate.current_rec = result
-            t_end = kenv.env.now
-            gate.touch(t_end)
-            if gate_activity_log is not None:
-                gate_activity_log.append(GateActivityEntry(
-                    t_start=t_start, t_end=t_end, line_id=line_id,
-                    sachnummer=order_rec.sachnummer, sim_class="pull",
-                    possible_changeover=possible_changeover,
-                    quantity=order_rec.quantity,
-                ))
-            return result
-
-    _gated_run_one_kanban_batch._mixed_gate_wrapped = True
-    kpl.run_one_kanban_batch = _gated_run_one_kanban_batch
-
-
-# ---------------------------------------------------------------------------
-# Class-2 (push) side — chunked, day-gated, gate-admitted.
+# Class-1/class-2 side — v10: both now drained exclusively by
+# crew_process() (see this module's docstring). The old
+# _install_kanban_gate_hook() monkeypatch is gone: crew_process() calls
+# kanban_process_logic_v2.run_one_kanban_batch directly (via
+# _run_one_pull_card, below), so there is no longer a separate
+# production_trigger_process call path to intercept.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Class-2 (push) side — v6: rolling per-order dispatcher, dynamic line
-# assignment, shared frozen-zone-aware chute.
+# Class-2 (push) side — rolling per-order dispatcher, dynamic line
+# assignment, shared frozen-zone-aware chute. UNCHANGED by the v10
+# crew refactor (movement 1) — only its drain side (movement 2,
+# formerly push_drain_process) moved into crew_process().
 #
 # Replaces the old day-batch model (build_dispatch_plan() once per
 # calendar day, one pre-sliced FIFO chunk list per line): that model
@@ -795,10 +683,10 @@ def _install_kanban_gate_hook(
 # If entities_resources_v4.py already exposes real exotic-slot resources
 # with a similar shape, ExoticSupermarketTracker.deposit_chunk()'s body is
 # the only thing that needs to change to call into those instead — the
-# call site (push_drain_process) doesn't need to change.
+# call site (_run_push_turn (via crew_process)) doesn't need to change.
 #
 # Deposit/withdraw symmetry: deposit_chunk() is called the moment a push
-# chunk finishes production (push_drain_process, step (e)); withdraw_chunk()
+# chunk finishes production (_run_push_turn (via crew_process), step (e)); withdraw_chunk()
 # is called once that same chunk's due_date is actually reached
 # (_withdraw_push_chunk_process, spawned right after step (e)) — modeling
 # "produced early, sits in the exotic supermarket, customer takes it at/near
@@ -825,7 +713,7 @@ class PushDeliveryRecord:
     One completed push chunk's delivery outcome — the flat, log-friendly
     artifact "due date vs. delivered date" KPI graphs and frontend
     summaries are meant to read, rather than reaching into
-    OrderRecord/chunk internals directly. Appended by push_drain_process()
+    OrderRecord/chunk internals directly. Appended by _run_push_turn() (via crew_process)
     the same instant chunk.delivered_date is stamped on the underlying
     OrderRecord (both places always agree — this is a mirror, not a
     second source of truth).
@@ -1184,7 +1072,7 @@ class PushChuteLogEntry:
     A "drain" event's entry_id names exactly which earlier "deposit"
     left the queue — always whichever entry PushChuteTracker's own live
     view had at the front at that moment (see PushChuteTracker.
-    drain_one()), since push_drain_process always drains "the next push
+    drain_one()), since _run_push_turn (via crew_process) always drains "the next push
     entry" for a line, never a specific one by id.
     """
     t: float
@@ -1202,7 +1090,7 @@ class PushChuteTracker:
     ExoticSupermarketTracker, with the SAME caveat: this is a
     self-contained bookkeeping structure fed entirely from
     push_dispatch_process()'s chute.push_chunk()/chute.push_rush_entry()
-    calls and push_drain_process()'s chute.pop_next_of_class("push")
+    calls and _run_push_turn() (via crew_process)'s chute.pop_next_of_class("push")
     calls — the ONLY push-side admission/removal call sites, both in
     this module — not wired into KanbanChuteResource's own internal
     queue. It approximates real ordering with the same rule
@@ -1256,7 +1144,7 @@ class PushChuteTracker:
 
     def drain_one(self, line_name: str, t: float) -> Optional[dict]:
         """Pop and return whichever entry is at the front of this line's
-        tracked pending list (the one push_drain_process's
+        tracked pending list (the one _run_push_turn (via crew_process)'s
         pop_next_of_class("push") call is assumed to have just drained —
         see class docstring), logging the removal. Returns None if this
         tracker's view is already empty for this line (shouldn't happen
@@ -1275,7 +1163,7 @@ class PushChuteTracker:
 
     def snapshot(self, line_name: str) -> list[dict]:
         """Current (live, right-now) pending push entries for a line,
-        oldest-first — i.e. index 0 is the next one push_drain_process
+        oldest-first — i.e. index 0 is the next one _run_push_turn (via crew_process)
         will drain. For a specific PAST instant, use
         push_chute_entries_at(tracker.log, ...) instead; this only
         reflects the simulation's current moment."""
@@ -1317,7 +1205,7 @@ def push_chute_entries_at(log: list[PushChuteLogEntry], line_name: str, edge_s: 
 @dataclass
 class PushSchedulerContext:
     """
-    Everything push_dispatch_process()/push_drain_process() need, bundled
+    Everything push_dispatch_process()/_run_push_turn() (via crew_process) need, bundled
     once in run_mixed() instead of threaded through as a long parameter
     list. Deliberately plain data + a couple of tiny read-only helpers —
     no SimPy control flow lives here.
@@ -1327,18 +1215,18 @@ class PushSchedulerContext:
     policy: PushPolicyConfig
     gates: dict[int, LinePriorityGate]
     chutes: dict[int, KanbanChuteResource]
-    push_signals: dict[int, simpy.Store]
-    pull_signals: dict[int, simpy.Store]        # rt.chute_signal — so a
-                                                  # successful push pop can
-                                                  # wake the pull side when it
-                                                  # exposes a pull entry at the
-                                                  # new front (see the chute's
-                                                  # v7 pop_next_of_class fix:
-                                                  # only the front entry is
-                                                  # ever eligible now, so both
-                                                  # sides must be woken on
-                                                  # every pop, not just on
-                                                  # enqueue).
+    activity_signal: simpy.Store                # ONE signal shared by every
+                                                  # idle crew — see
+                                                  # crew_process()/
+                                                  # _install_crew_chute_hooks().
+                                                  # Replaces the old per-line
+                                                  # push_signals/pull_signals
+                                                  # cross-wake pair: a crew
+                                                  # cares about ANY line's
+                                                  # front changing, not just
+                                                  # "its own" line's, so one
+                                                  # shared wake-up is both
+                                                  # simpler and correct.
     name_to_id: dict[str, int]
     active_lines: list[str]
     verbose: bool = True
@@ -1350,9 +1238,23 @@ class PushSchedulerContext:
     exotic_snapshot_log: Optional[list[ExoticSlotSnapshot]] = None
     chute_tracker: Optional[PushChuteTracker] = None
     gate_activity_log: Optional[list["GateActivityEntry"]] = None
+    pending_batches: dict[int, PendingPullBatch] = field(default_factory=dict)
+    rt: Optional[object] = None                  # KanbanRuntime — needed by
+                                                  # _run_one_pull_card() for
+                                                  # rt.record_supermarket() /
+                                                  # the on_finish card-recycle
+                                                  # wiring that used to live
+                                                  # inside
+                                                  # production_trigger_process.
 
     def line_id(self, line_name: str) -> int:
         return self.name_to_id[line_name]
+
+    def notify(self) -> None:
+        """Wake every idle crew so it re-runs Rule 1/2 — call after any
+        change that could affect which line is most loaded (a chute
+        insertion, or a crew finishing a turn)."""
+        self.activity_signal.put(None)
 
     def is_busy(self, line_name: str) -> bool:
         """
@@ -1469,7 +1371,7 @@ def _build_push_order_record(
     """
     Resolve one CustomerDemand row + its chosen production line into a
     full OrderRecord — due_date populated straight from the row's own
-    (Date, Time); delivered_date stays None until push_drain_process()
+    (Date, Time); delivered_date stays None until _run_push_turn() (via crew_process)
     sets it on the specific chunk that actually finishes.
     """
     lc = info.lines[assigned_line]
@@ -1493,7 +1395,7 @@ def push_dispatch_process(ctx: PushSchedulerContext, row):
     SimPy generator — the full lifecycle of ONE CustomerDemand (push) row,
     from "not yet visible" through "placed on a line's chute". One of
     these is spawned per row by run_mixed(); it does NOT wait for the
-    order to actually finish producing (that's push_drain_process()'s
+    order to actually finish producing (that's _run_push_turn() (via crew_process)'s
     job, decoupled via the chute) — it only decides WHERE the order goes
     and WHEN it becomes visible/placed.
 
@@ -1675,7 +1577,9 @@ def push_dispatch_process(ctx: PushSchedulerContext, row):
             chute.push_chunk(order.sachnummer, priority="M", payload=chunk)
             if ctx.chute_tracker is not None:
                 ctx.chute_tracker.deposit(assigned_line, order.sachnummer, env.now, rush=False)
-        ctx.push_signals[line_id].put(None)  # wake push_drain_process
+        # No explicit wake needed here — _install_crew_chute_hooks() wraps
+        # push_chunk()/push_rush_entry() to notify ctx.activity_signal
+        # after every insertion, so every idle crew re-checks automatically.
         remaining -= qty
         n_chunks += 1
 
@@ -1730,7 +1634,7 @@ def _deposit_push_chunk_to_supermarket(
 def _withdraw_push_chunk_process(ctx: PushSchedulerContext, line_name: str, chunk: OrderRecord):
     """
     SimPy generator — one spawned per delivered push chunk (see
-    push_drain_process, step (e)). Models "the customer withdraws this
+    _run_push_turn (via crew_process), step (e)). Models "the customer withdraws this
     exotic-supermarket card when they actually need it", i.e. at
     chunk.due_date — the push-side counterpart to the pull-side
     withdrawal_process, and the missing half of ExoticSupermarketTracker
@@ -1755,12 +1659,12 @@ def _withdraw_push_chunk_process(ctx: PushSchedulerContext, line_name: str, chun
          within the hour" — instead of warning and moving on. (In normal
          operation this never actually waits here, since this process is
          only spawned once its OWN chunk has already been deposited by
-         push_drain_process; the block only matters for the general
+         _run_push_turn (via crew_process); the block only matters for the general
          mechanism / any future caller of withdraw_chunk that isn't as
          tightly sequenced as this one.)
 
     Runs as a detached background process (fire-and-forget via
-    env.process(), not `yield from`'d by push_drain_process) so it
+    env.process(), not `yield from`'d by _run_push_turn (via crew_process)) so it
     doesn't block that loop from moving on to the next chunk.
 
     If chunk.due_date is None (shouldn't happen for a
@@ -1802,212 +1706,321 @@ def _withdraw_push_chunk_process(ctx: PushSchedulerContext, line_name: str, chun
               f"push card {chunk.sachnummer!r}{waited_str}")
 
 
-def push_drain_process(
+def _install_crew_chute_hooks(
+    chutes: dict[int, KanbanChuteResource],
+    activity_signal: simpy.Store,
+) -> None:
+    """
+    Per-instance monkeypatch, called once before env.run() — same
+    pattern/spirit as the old _install_pull_only_chute_view() /
+    _install_kanban_gate_hook() it replaces. Two things, both required
+    now that crew_process() is the ONLY drainer for every line's chute:
+
+      1. Neutralise chute.pop_next(): kanban_process_logic_v2's
+         production_trigger_process is still spawned, UNMODIFIED, by
+         start_kanban_simulation() (needed for withdrawal_process /
+         day_boundary_process / collection_box_emptying_process's sake —
+         movement 1, chute filling), and it still calls this once per
+         loop iteration. Since crews now own every pop (via
+         pop_next_of_class(), called directly — see _run_pull_turn /
+         _run_push_turn), pop_next() is patched to always return None.
+         production_trigger_process's own
+         `while batch is None: yield signal.get(); batch = chute.pop_next()`
+         loop then simply blocks forever, harmlessly, never touching a
+         station — this keeps kanban_process_logic_v2.py completely
+         unmodified while guaranteeing it can never compete with a crew
+         for the same chute entry.
+      2. Notify `activity_signal` after every successful insertion —
+         push_batch() (pull arrivals), push_chunk()/push_rush_entry()
+         (push arrivals) — so an idle crew blocked on "nothing to do
+         anywhere" wakes up and re-runs Rule 1/2 the instant ANY line's
+         chute gains work. Replaces the old per-line, per-class
+         push_signals/pull_signals cross-wake pair entirely: one shared
+         signal, because a crew cares about ANY line's front changing,
+         not just "its own" line's.
+
+    Idempotent per chute instance (checked via a marker attribute), same
+    as the two functions it replaces.
+    """
+    for chute in chutes.values():
+        if getattr(chute, "_mixed_crew_hooked", False):
+            continue  # already installed on this instance
+
+        _orig_push_batch = chute.push_batch
+        _orig_push_chunk = chute.push_chunk
+        _orig_push_rush_entry = chute.push_rush_entry
+
+        def _pop_next_disabled():
+            return None
+
+        def _push_batch(product_type, cards, _orig=_orig_push_batch):
+            _orig(product_type, cards)
+            activity_signal.put(None)
+
+        def _push_chunk(product_type, priority, payload, _orig=_orig_push_chunk):
+            _orig(product_type, priority, payload)
+            activity_signal.put(None)
+
+        def _push_rush_entry(product_type, payload, _orig=_orig_push_rush_entry):
+            _orig(product_type, payload)
+            activity_signal.put(None)
+
+        chute.pop_next = _pop_next_disabled
+        chute.push_batch = _push_batch
+        chute.push_chunk = _push_chunk
+        chute.push_rush_entry = _push_rush_entry
+        chute._mixed_crew_hooked = True
+
+
+def _run_one_pull_card(
+    ctx: PushSchedulerContext,
+    line_id: int,
+    line_name: str,
+    entry,  # ChuteEntry, sim_class == "pull", n_cards == 1 by construction
+    n_workers: int,
+    event_log: Optional[list[ScheduleEvent]],
+    crew_id: int,
+):
+    """
+    SimPy generator — run exactly ONE already-popped pull ChuteEntry (one
+    physical KanbanCard) to completion.
+
+    This is the crew-loop replacement for what used to be split across
+    two places: _install_kanban_gate_hook's wrapper (gate admission,
+    event_log tagging, GateActivityEntry) and one iteration of
+    kanban_process_logic_v2.production_trigger_process's own loop body
+    (order_rec construction via _make_kanban_order_record, the on_finish
+    callback wiring card-recycling + Supermarket deposit). Both are
+    inlined here since production_trigger_process is now permanently
+    neutralised (see _install_crew_chute_hooks) and crew_process() calls
+    kanban_process_logic_v2.run_one_kanban_batch directly.
+
+    `crew_id` is recorded on the resulting GateActivityEntry — this is
+    the "which crew produced this card" attribution the frontend reads
+    (see api_server_mixed.py's kpi_by_crew / crew_activity endpoint).
+
+    Caller (crew_process, via _run_pull_turn) already holds
+    ctx.gates[line_id] for the duration of this call.
+    """
+    import kanban_process_logic_v2 as kpl
+
+    kenv = ctx.kenv
+    env = kenv.env
+    rt = ctx.rt
+    gate = ctx.gates[line_id]
+    product_type, cards = entry.product_type, entry.cards
+    batch_size = cards[0].batch_size
+    quantity = batch_size * len(cards)
+
+    order_rec = kpl._make_kanban_order_record(rt, line_name, product_type, quantity)
+    if order_rec is None:
+        if ctx.verbose:
+            print(f"  ⚠ {line_name}: {product_type!r} not feasible here — "
+                  f"re-queuing card on the Kanban Chute.")
+        ctx.chutes[line_id].push_batch(product_type, cards)
+        return
+
+    for c in cards:
+        c.record_transition("in_production", env.now)
+
+    sm = kenv.supermarket_for(line_id, product_type)
+    recycle_queue: list = list(cards)
+
+    def on_finish(t: float, status: str, _sm=sm, _rq=recycle_queue,
+                  _product=product_type, _line_id=line_id):
+        if status != "passed" or _sm is None:
+            return
+        n_whole = _sm.deposit_finished_pcs(1)
+        rt.record_supermarket(_line_id, _product, "deposit_partial", _sm)
+        for _ in range(n_whole):
+            if _rq:
+                card = _rq.pop(0)
+            else:
+                # Fallback only — should be rare/never, mirrors the
+                # original production_trigger_process comment: every
+                # piece produced for this card has a matching card
+                # already reserved in `cards` above.
+                card = kenv.create_card(_product, _line_id, _sm.batch_size, priority="M")
+            if ctx.verbose:
+                print(f"  [t={t:10.1f}] {line_name}(L{_line_id}): package of "
+                      f"{_sm.batch_size} × {_product!r} COMPLETED — "
+                      f"delivering to Supermarket.")
+            env.process(
+                kpl._return_card_to_supermarket(rt, kenv, _sm, card, t, line_name,
+                                                 _line_id, ctx.verbose)
+            )
+
+    t_start = env.now
+    possible_changeover = (
+        gate.current_rec is None
+        or getattr(gate.current_rec, "sachnummer", None) != order_rec.sachnummer
+    )
+    # Tag events emitted by THIS call as "pull" — see module docstring's
+    # "Event-log class tagging" section for why filtering by line_id (not
+    # just index) is required. Also back-fills crew_id (v10) the same
+    # way, from this call's own crew_id parameter — this is what lets
+    # schedule_events.build_gantt_payload's "crewId" on each Gantt job
+    # segment actually be populated instead of staying null (see that
+    # module's ScheduleEvent.crew_id docstring for the contract this
+    # fulfils).
+    _log = kenv.event_log if event_log is None else event_log
+    _start_idx = len(_log)
+    result = yield from kpl.run_one_kanban_batch(
+        kenv, line_id, gate.current_rec, order_rec, n_workers, on_finish, ctx.verbose,
+        event_log=event_log,
+    )
+    for _ev in _log[_start_idx:]:
+        if _ev.line_id == line_id and _ev.sim_class is None:
+            _ev.sim_class = "pull"
+        if _ev.line_id == line_id and _ev.crew_id is None:
+            _ev.crew_id = crew_id
+    if result is not None:
+        gate.current_rec = result
+    t_end = env.now
+    gate.touch(t_end)
+    if ctx.gate_activity_log is not None:
+        ctx.gate_activity_log.append(GateActivityEntry(
+            t_start=t_start, t_end=t_end, line_id=line_id,
+            sachnummer=order_rec.sachnummer, sim_class="pull",
+            crew_id=crew_id,
+            possible_changeover=possible_changeover,
+            quantity=order_rec.quantity,
+        ))
+
+
+def _run_pull_turn(
     ctx: PushSchedulerContext,
     line_id: int,
     line_name: str,
     n_workers: int,
-    event_log: Optional[list[ScheduleEvent]] = None,
+    event_log: Optional[list[ScheduleEvent]],
+    crew_id: int,
 ):
     """
-    SimPy generator — one per line. Continuously drains PUSH entries from
-    that line's (shared, frozen-zone-aware) chute, leaving pull entries in
-    place for kanban_process_logic.production_trigger_process's own
-    (unmodified) chute.pop_next() to handle, see
-    _install_pull_only_chute_view(). Blocks on ctx.push_signals[line_id]
-    (a simpy.Store used purely as a wake-up token) whenever the chute
-    currently has no push entry for this line, rather than polling.
+    SimPy generator — one full pull "turn": drain up to 4 cards of one
+    product_number from the front of this line's chute, respecting
+    whatever order movement 1 has already established. NEVER looks past
+    the front entry — if the front stops matching the batch in progress,
+    the turn ends immediately and the partial count is persisted
+    (ctx.pending_batches) for a future visit, never searched for out of
+    order (chute order governs; the crew doesn't reorder it — see this
+    module's docstring and Rule 1.a).
 
-    v9 chute-early-pop-correction fix — peek, don't pop, until admitted
-    -----------------------------------------------------------------
-    This used to call chute.pop_next_of_class("push") FIRST, then run the
-    (now-removed) idle-timeout wait, and only THEN request the
-    LinePriorityGate. That popped the chunk out of the chute — and so
-    gave up the chute's own front-of-queue/frozen-zone protection for it
-    — before it had actually secured the gate. Whenever that pop exposed
-    a Kanban card at the new front (i.e. this was the last push chunk
-    ahead of a pull batch), production_trigger_process could legitimately
-    pop that card and request the gate at priority=0 while this process
-    was still sitting in its wait loop, jump the (still-empty) gate, run
-    to completion, touch gate.last_activity_t on the way out — which
-    reset THIS process's idle timer right as it was about to elapse — and
-    repeat for every remaining card in that pull batch, with the popped
-    push chunk stuck "dequeued but stranded" the whole time. Net effect:
-    a whole pull batch could run before the one push chunk that was
-    already ahead of it in the chute.
+    Handles all of the spec's pull examples with the same loop, no
+    special-casing:
+      - 6 cards of A queued: takes 4 (pending cleared — batch complete),
+        leaving 2 at the front for whatever turn visits this line next,
+        which simply starts a fresh record from taken=0.
+      - 2 cards of A queued, then 2 more of A arrive before the next
+        visit: first visit takes 2 (pending persists {A, taken=2}); a
+        later visit resumes and takes the remaining 2 to reach 4.
+      - 3 taken, then 2 more of A arrive, then 4 of B, then 4 more of A:
+        the turn that hits B persists {A, taken=3}; a later turn that
+        finds A back at the front (once whatever's ahead of it has been
+        dealt with by movement 1's own ordering) resumes with taken=3 —
+        exactly Rule 1.a, needing only 1 more card to complete the batch.
+    """
+    chute = ctx.chutes[line_id]
+    front = chute.peek_next_of_class("pull")
+    if front is None:
+        return
 
-    Fixed by not popping until the moment this chunk is actually about to
-    execute: peek the front of the chute (chute.peek_next_of_class("push"))
-    to decide whether there's anything to do, request the gate, and only
-    call chute.pop_next_of_class("push") once the gate has been granted.
-    Until then the chunk is still physically sitting at the front of the
-    chute, so the pull-only view's chute.pop_next_of_class("pull") keeps
-    (correctly) refusing to hand out anything behind it — the chute's
-    ordering guarantee now holds for the chunk's entire wait, not just the
-    portion of it spent still inside the chute's own data structure.
+    pending = ctx.pending_batches.get(line_id)
+    if pending is None or pending.product_type != front.product_type:
+        pending = PendingPullBatch(product_type=front.product_type, taken=0)
 
-    The old 10-minute idle-timeout wait (step (a) in the previous version
-    of this docstring) has also been deleted — it was a remnant of the
-    pre-frozen-zone design, where it was the only thing stopping push
-    from monopolising a line; the frozen zone and the shared, ordered
-    chute now do that job, so the extra idle wait no longer serves a
-    purpose (and, per the fix above, actively contributed to the bug by
-    giving pull activity a way to keep resetting it).
+    while pending.taken < 4:
+        front = chute.peek_next_of_class("pull")
+        if front is None or front.product_type != pending.product_type:
+            break
+        entry = chute.pop_next_of_class("pull")
+        yield from _run_one_pull_card(ctx, line_id, line_name, entry, n_workers, event_log, crew_id)
+        pending.taken += 1
+        ctx.notify()
 
-    Per popped chunk:
-      (b) the shared LinePriorityGate at priority=1 (a concurrently-
-          arriving class-1 request always jumps the wait queue ahead of
-          this if it hasn't been granted yet, exactly as before);
-      (c) run_one_order() to actually execute it;
-      (d) chunk.delivered_date is stamped from the shared epoch + env.now
-          the moment execution completes — this, together with
-          chunk.due_date, is what OrderRecord.delivery_delta_h is for. A
-          matching PushDeliveryRecord is appended to ctx.delivery_log
-          (if given), the flat log-friendly mirror a frontend KPI graph
-          is meant to read (see push_delivery_summary);
-      (e) _deposit_push_chunk_to_supermarket() — deposits the finished
-          chunk into this line's exotic Supermarket slot pool, flagging
-          (not blocking) on overflow. See that function's docstring for
-          the current self-contained-tracker caveat.
-      (f) spawns _withdraw_push_chunk_process() as a detached background
-          process (env.process(), not `yield from`'d) — sleeps until this
-          chunk's due_date, then releases its card from the exotic pool.
-          This is the piece that keeps the exotic supermarket from filling
-          up and never draining: deposit happens at production-finish time
-          (up to ~24h before due), withdrawal happens at due_date. Detached
-          so this loop moves straight on to the next chunk rather than
-          blocking until the customer's due date arrives.
+    if pending.taken >= 4:
+        ctx.pending_batches.pop(line_id, None)
+    else:
+        ctx.pending_batches[line_id] = pending
 
-    Runs until env.run()'s horizon ends (an outer SimPy timeout, not
-    something this generator manages itself) — there's no "queue
-    drained" exit condition any more, since push_dispatch_process()
-    keeps feeding this chute for as long as new CustomerDemand rows
-    become visible.
 
-    v6 shift on/off: admission (the step right after peeking the front of
-    the chute, before requesting the gate) also requires this line to be
-    on-shift right now (ctx.is_line_on). A waiting push chunk is never
-    force-admitted onto an off line — it simply waits, woken by whichever
-    comes first: a new chute arrival, or this line's next on-shift
-    transition (ctx.seconds_until_on). See the inline comment at that
-    check for the SimPy Store-cancellation detail this requires.
+def _run_push_turn(
+    ctx: PushSchedulerContext,
+    line_id: int,
+    line_name: str,
+    n_workers: int,
+    event_log: Optional[list[ScheduleEvent]],
+    crew_id: int,
+):
+    """
+    SimPy generator — one full push "turn": pop and run consecutive push
+    ChuteEntry objects off the front of this line's chute, one at a time,
+    for as long as the front stays a push entry of the SAME product_type
+    as the first one taken this turn — "take all the cards of the push
+    order". An order's chunks are dispatched back-to-back under the same
+    sachnummer (see push_dispatch_process), so a same-product run of push
+    entries is, in practice, one order; this is a stated assumption, not
+    verified against a scenario where two DIFFERENT push orders of the
+    same product happen to sit adjacent in one line's chute.
+
+    Per popped chunk, unchanged from the old push_drain_process (gate
+    admission is already held by the caller — crew_process — for the
+    whole turn, so there's no separate per-chunk gate request here):
+    execute via run_one_order(), tag event_log entries "push", append a
+    GateActivityEntry, stamp delivered_date + PushDeliveryRecord, deposit
+    into the exotic Supermarket, and spawn the detached due-date
+    withdrawal process.
     """
     kenv = ctx.kenv
     env = kenv.env
     gate = ctx.gates[line_id]
     chute = ctx.chutes[line_id]
-    signal = ctx.push_signals[line_id]
+
+    front = chute.peek_next_of_class("push")
+    if front is None:
+        return
+    product_type = front.product_type
 
     while True:
-        # Peek only — do NOT remove the entry from the chute yet. As long
-        # as it's still sitting at the front of the chute, the pull-only
-        # view's pop_next_of_class("pull") keeps refusing to hand out
-        # anything behind it, so this chunk's place in line is protected
-        # for the entire time it takes to secure the gate below. (See the
-        # v9 chute-early-pop-correction note in this function's docstring
-        # for why popping early here used to let a whole pull batch cut
-        # in front of the very last push chunk.)
         front = chute.peek_next_of_class("push")
+        if front is None or front.product_type != product_type:
+            break
 
-        # v6 shift on/off: a push chunk sitting at the front of the chute
-        # must not be admitted while this line is off — "push orders
-        # search for on lines; off lines are not included". If the chute
-        # is genuinely empty we wait purely for a new arrival, same as
-        # pre-v6; if there IS a chunk waiting but the line is off, we
-        # wait for whichever comes first — a new chute arrival, or this
-        # line's next on-shift transition — and re-peek/re-check from
-        # scratch either way, rather than assuming what woke us.
-        on_now = front is not None and ctx.is_line_on(line_name)
-        if front is None or not on_now:
-            get_ev = signal.get()
-            wait_s = None if front is None else ctx.seconds_until_on(line_name)
-            if wait_s is None:
-                # front is None (nothing queued at all) -> plain signal
-                # wait, identical to pre-v6 behaviour; OR (front is not
-                # None but) this line never turns on again within the
-                # configured calendar horizon — see
-                # PushSchedulerContext.seconds_until_on's docstring. There
-                # is nothing useful to bound the wait with in that case;
-                # fall back to a plain signal wait (only a Shifts-sheet
-                # edit + reload can ever unstick this chunk).
-                yield get_ev
-            else:
-                timeout_ev = env.timeout(wait_s)
-                fired = yield get_ev | timeout_ev
-                if get_ev not in fired:
-                    # The on-shift timeout won the race — get_ev is still
-                    # sitting, unfulfilled, in signal's internal get
-                    # queue. Cancel it explicitly: SimPy matches a Store's
-                    # queued get() requests to put()s in FIFO order
-                    # regardless of whether anything is still yielding on
-                    # them, so leaving this one in place would let it
-                    # silently swallow the NEXT real wake-up meant for a
-                    # future iteration of this same loop.
-                    if get_ev in signal.get_queue:
-                        signal.get_queue.remove(get_ev)
-            continue
+        t_start = env.now
+        entry = chute.pop_next_of_class("push")
+        if ctx.chute_tracker is not None:
+            ctx.chute_tracker.drain_one(line_name, env.now)
+        chunk: OrderRecord = entry.payload
+        possible_changeover = (
+            gate.current_rec is None
+            or getattr(gate.current_rec, "sachnummer", None) != chunk.sachnummer
+        )
 
-        # (b)+(c) gate admission + execution — same event-log tagging
-        # reasoning as _gated_run_one_kanban_batch / the old
-        # push_line_process: gate.resource has capacity=1 per line, so
-        # while we hold it no other process (pull or push) can be
-        # mid-execution for this line_id, making index-window + line_id
-        # filtering safe against concurrently-interleaving OTHER lines.
-        #
-        # No idle-timeout wait here any more (deleted — see docstring):
-        # we go straight from "there's an on-shift push chunk waiting" to
-        # requesting the gate. A concurrently-arriving class-1 request
-        # still jumps this one's place in the WAIT queue if ours hasn't
-        # been granted yet — that non-preemptive priority behaviour is
-        # unchanged — but nothing now delays us from even asking. (Pull's
-        # own gate request waits out this same line's off-shift periods
-        # before ever requesting the gate either — see
-        # _gated_run_one_kanban_batch — so by the time either side reaches
-        # this request, the line being off is not among the reasons it
-        # might have to wait in queue.)
-        with gate.resource.request(priority=1) as req:
-            yield req
-            # Only pop now, right as we're about to actually run it — the
-            # chute's own single-consumer-per-class invariant (only this
-            # process ever pops "push" entries for this line) guarantees
-            # the front is still the same chunk we peeked above.
-            t_start = env.now
-            entry = chute.pop_next_of_class("push")
-            if ctx.chute_tracker is not None:
-                ctx.chute_tracker.drain_one(line_name, env.now)
-            # This pop just changed the front of the (now strictly
-            # single-file) shared queue — wake the pull side (rt.chute_signal,
-            # via ctx.pull_signals) so production_trigger_process re-checks
-            # in case a pull entry is now at the front. Harmless no-op if
-            # there's nothing there, or the pull loop is already awake.
-            ctx.pull_signals[line_id].put(None)
-            chunk: OrderRecord = entry.payload
-            possible_changeover = (
-                gate.current_rec is None
-                or getattr(gate.current_rec, "sachnummer", None) != chunk.sachnummer
-            )
+        _log = kenv.event_log if event_log is None else event_log
+        _start_idx = len(_log)
+        ran = yield from run_one_order(
+            kenv, line_id, gate.current_rec, chunk, n_workers, ctx.verbose
+        )
+        # Same "pull" tagging as _run_one_pull_card above, plus the same
+        # crew_id back-fill (v10) — see that function's comment for why.
+        for _ev in _log[_start_idx:]:
+            if _ev.line_id == line_id and _ev.sim_class is None:
+                _ev.sim_class = "push"
+            if _ev.line_id == line_id and _ev.crew_id is None:
+                _ev.crew_id = crew_id
+        if ran:
+            gate.current_rec = chunk
+        t_end = env.now
+        gate.touch(t_end)
+        if ctx.gate_activity_log is not None:
+            ctx.gate_activity_log.append(GateActivityEntry(
+                t_start=t_start, t_end=t_end, line_id=line_id,
+                sachnummer=chunk.sachnummer, sim_class="push",
+                crew_id=crew_id,
+                possible_changeover=possible_changeover,
+                quantity=chunk.quantity,
+            ))
 
-            _log = kenv.event_log if event_log is None else event_log
-            _start_idx = len(_log)
-            ran = yield from run_one_order(
-                kenv, line_id, gate.current_rec, chunk, n_workers, ctx.verbose
-            )
-            for _ev in _log[_start_idx:]:
-                if _ev.line_id == line_id and _ev.sim_class is None:
-                    _ev.sim_class = "push"
-            if ran:
-                gate.current_rec = chunk
-            t_end = env.now
-            gate.touch(t_end)
-            if ctx.gate_activity_log is not None:
-                ctx.gate_activity_log.append(GateActivityEntry(
-                    t_start=t_start, t_end=t_end, line_id=line_id,
-                    sachnummer=chunk.sachnummer, sim_class="push",
-                    possible_changeover=possible_changeover,
-                    quantity=chunk.quantity,
-                ))
-
-        # (d) delivery KPI timestamp
         chunk.delivered_date = ctx.epoch + _dt.timedelta(seconds=env.now)
         if ctx.delivery_log is not None:
             ctx.delivery_log.append(PushDeliveryRecord(
@@ -2020,12 +2033,7 @@ def push_drain_process(
                 rush=bool(chunk.note and "RUSH" in chunk.note),
             ))
 
-        # (e) step 4: deposit into this line's exotic Supermarket pool
         _deposit_push_chunk_to_supermarket(ctx, line_name, chunk)
-
-        # (f) schedule this chunk's customer withdrawal at its due_date —
-        # detached (fire-and-forget), so it runs independently of this
-        # loop's progress onto the next chunk.
         env.process(_withdraw_push_chunk_process(ctx, line_name, chunk))
 
         if ctx.verbose:
@@ -2034,61 +2042,143 @@ def push_drain_process(
             print(f"  [t={env.now:10.1f}] {line_name}(L{line_id}): push chunk done "
                   f"{chunk.sachnummer} qty={chunk.quantity}{delta_str}")
 
+        ctx.notify()
 
-def _install_pull_only_chute_view(
-    chutes: dict[int, KanbanChuteResource],
-    push_signals: dict[int, simpy.Store],
-) -> None:
+
+def _select_line_for_crew(
+    ctx: PushSchedulerContext, held_line_id: Optional[int],
+) -> Optional[int]:
     """
-    Make every line's chute.pop_next() — called by
-    kanban_process_logic.py's (UNCHANGED, no edits needed there)
-    production_trigger_process — transparently see ONLY pull entries, so
-    push chunks can safely share the same chute (needed so the frozen
-    zone means the same thing, and counts real load, for both classes)
-    without kanban_process_logic.py needing to know push exists at all.
+    Rule 1 (fresh pick — held_line_id=None) / Rule 2 (re-evaluation after
+    a turn — held_line_id=the line this crew currently holds) line
+    selection.
 
-    Per-INSTANCE monkeypatch (each line's chute object gets its own bound
-    override), same pattern/spirit as _install_kanban_gate_hook(): every
-    existing caller of chute.pop_next() picks up the pull-only view
-    automatically. push_drain_process() (this module) is the only caller
-    that ever wants push entries, and it always calls
-    chute.peek_next_of_class("push") / chute.pop_next_of_class("push")
-    directly — never this patched pop_next() — so the two consumers can
-    never see, let alone steal, each other's entries.
+    Eligible lines: on-shift right now, with pending work
+    (KanbanChuteResource.total_pending_cards > 0), and — unless it's the
+    line we already hold — not currently locked by another crew
+    (gate.resource.count == 0).
 
-    v7 cross-wake fix: the chute's pop_next_of_class() now only ever
-    returns the front entry (see that method's v7 chute-correction
-    docstring) — a call can return None even with a non-empty queue if
-    the front belongs to the other class. That means a successful pull
-    pop can change which entry is now at the front, and push_drain_process
-    (blocked on ctx.push_signals after its own "not my turn" None) needs
-    to be told to re-check. `push_signals` is threaded in here so the
-    patched pop_next() can fire that wake on every successful pop —
-    `push_drain_process()` does the mirror-image wake back into
-    `ctx.pull_signals` (rt.chute_signal) on its own successful pops.
+    Tie-breaking:
+      - Among FRESH candidates (held_line_id=None), the max-load line
+        wins; ties fall to iteration order (kenv.lines' own order, i.e.
+        lowest line_id) — not specified by the spec beyond the
+        crew-vs-crew timing case below, so this is a reasonable default.
+      - When RE-EVALUATING a line already held, Rule 2's "equal amount
+        stays on the same one" is implemented by requiring a candidate
+        to be STRICTLY more loaded than the held line before switching.
 
-    Must be called once, before env.run() (and before
-    start_kanban_simulation() registers production_trigger_process, to
-    keep the ordering obviously correct — though nothing here actually
-    depends on WHEN pop_next is first called, only that it's patched
-    before then).
+    Crew-vs-crew arbitration: two crews becoming idle at the same
+    simulated instant are NOT arbitrated by anything in this function —
+    it's a pure (side-effect-free) read of current state. The
+    arbitration happens naturally in crew_process(): requesting a line's
+    gate.resource synchronously marks it busy before that crew's first
+    yield, and SimPy runs same-instant processes in the order they were
+    spawned (run_mixed() spawns crew_id=0 before crew_id=1, ...), so the
+    lower-numbered crew's request is always visible to the next crew's
+    call to this function — "crew 1 starts selecting, then crew 2",
+    exactly as specified, with no extra bookkeeping needed here.
     """
-    for chute in chutes.values():
-        if getattr(chute.pop_next, "_mixed_pull_only", False):
-            continue  # already installed on this instance
+    loads: dict[int, int] = {}
+    for line in ctx.kenv.lines:
+        lid = line.line_id
+        if not ctx.is_line_on(line.line_name):
+            continue
+        if lid != held_line_id and ctx.gates[lid].resource.count > 0:
+            continue
+        load = ctx.chutes[lid].total_pending_cards
+        if load > 0:
+            loads[lid] = load
 
-        def _pull_only_pop_next(_chute=chute, _push_signals=push_signals):
-            entry = _chute.pop_next_of_class("pull")
-            if entry is not None:
-                # This pop just changed the front of the queue — wake
-                # push_drain_process so it re-checks in case a push entry
-                # is now at the front. Harmless no-op if there's nothing
-                # for it, or nothing pending at all.
-                _push_signals[_chute.line_id].put(None)
-            return entry
+    if not loads:
+        return None
 
-        _pull_only_pop_next._mixed_pull_only = True
-        chute.pop_next = _pull_only_pop_next
+    if held_line_id is not None and held_line_id in loads:
+        held_load = loads[held_line_id]
+        other_best_id, other_best_load = max(
+            ((lid, ld) for lid, ld in loads.items() if lid != held_line_id),
+            key=lambda kv: kv[1], default=(None, -1),
+        )
+        if other_best_load > held_load:
+            return other_best_id
+        return held_line_id
+
+    return max(loads.items(), key=lambda kv: kv[1])[0]
+
+
+def crew_process(
+    ctx: PushSchedulerContext,
+    crew_id: int,
+    n_workers: int,
+    event_log: Optional[list[ScheduleEvent]] = None,
+):
+    """
+    SimPy generator — one instance per crew (run_mixed(n_crews=...)).
+    Movement 2 (depletion): the ONLY consumer of every line's chute (see
+    _install_crew_chute_hooks). Loop:
+
+      1. Rule 1/2 (_select_line_for_crew): pick the most-loaded eligible
+         line — None if nothing anywhere has work right now.
+      2. Hold that line's LinePriorityGate for as long as this crew keeps
+         working it (possibly several turns in a row — see step 3).
+      3. Run ONE turn: the whole push order if a push entry is at the
+         chute's front (_run_push_turn), or up to a 4-card
+         same-product_number pull batch if a pull entry is at the front
+         (_run_pull_turn, with Rule 1.a carryover via
+         ctx.pending_batches). If neither is available (chute emptied
+         since selection), release the gate and re-select from scratch.
+      4. Rule 2: re-run _select_line_for_crew with this line as
+         held_line_id. Strictly-more-loaded elsewhere -> release this
+         gate and go back to step 1. Otherwise -> loop back to step 3 on
+         the same line (still holding its gate).
+
+    Idles (blocked on ctx.activity_signal) whenever step 1 finds nothing
+    on-shift anywhere with pending work; woken by any chute insertion
+    (_install_crew_chute_hooks) or any crew finishing a turn (ctx.notify,
+    called from _run_pull_turn/_run_push_turn).
+
+    v6 shift on/off: a line can go off-shift WHILE this crew holds it
+    (between turns, or — more subtly — the calendar transitioning mid-
+    turn is never checked, matching the "a turn already in progress is
+    never preempted" rule from _gated_run_one_kanban_batch's original
+    docstring). Before starting a NEW turn, this loop waits out any
+    off-shift period on the currently-held line rather than starting one
+    — "off lines cannot be used" applies to STARTING work, not to
+    finishing what's already running.
+    """
+    kenv = ctx.kenv
+    env = kenv.env
+
+    while True:
+        line_id = _select_line_for_crew(ctx, held_line_id=None)
+        if line_id is None:
+            yield ctx.activity_signal.get()
+            continue
+
+        gate = ctx.gates[line_id]
+        with gate.resource.request() as req:
+            yield req
+            while True:
+                line_name = next(l.line_name for l in kenv.lines if l.line_id == line_id)
+
+                while not ctx.is_line_on(line_name):
+                    wait_s = ctx.seconds_until_on(line_name)
+                    yield env.timeout(wait_s if wait_s else _OFF_LINE_REPOLL_S)
+
+                chute = ctx.chutes[line_id]
+                if chute.peek_next_of_class("push") is not None:
+                    yield from _run_push_turn(ctx, line_id, line_name, n_workers, event_log, crew_id)
+                elif chute.peek_next_of_class("pull") is not None:
+                    yield from _run_pull_turn(ctx, line_id, line_name, n_workers, event_log, crew_id)
+                else:
+                    break  # chute emptied since selection — release, re-select
+
+                next_line_id = _select_line_for_crew(ctx, held_line_id=line_id)
+                if next_line_id != line_id:
+                    break  # Rule 2: a strictly more-loaded line exists
+                           # (or nothing is left anywhere) — release and
+                           # go back to a fresh selection.
+                # else: strictly equal, or nothing more loaded -> stay
+                # and run another turn on this same line.
 
 
 # ---------------------------------------------------------------------------
@@ -2099,6 +2189,7 @@ def run_mixed(
     excel_path: str,
     setup_times_path: str,
     n_workers: int = N_WORKERS,
+    n_crews: int = 2,
     seed: int = SEED,
     verbose: bool = True,
     day_start_hour: int = DAY_START_HOUR,
@@ -2125,22 +2216,27 @@ def run_mixed(
     3. Horizon: max of estimate_horizon_s() (kanban's own, sheet-driven
        estimate) and the last CustomerDemand due date + drain_days
        (kanban's estimator only looks at CustomerDemandKanban).
-    4. One LinePriorityGate per line, plus each line's chute (from
-       kenv.kanban_chutes) gets its frozen zone size set from `push_policy`
-       and its pop_next() view patched to pull-only (see
-       _install_pull_only_chute_view).
-    5. _install_kanban_gate_hook() — monkeypatches
-       kanban_process_logic.run_one_kanban_batch so class-1 production
-       goes through the gate at priority=0. Must happen before env.run().
-    6. start_kanban_simulation(kenv, ...) — registers withdrawal_process,
-       day_boundary_process, and per-line collection_box_emptying_process
-       / production_trigger_process EXACTLY as kanban_runner.py does;
-       nothing about kanban's own wiring is reimplemented here.
-    7. One push_dispatch_process() per CustomerDemand row (visibility
-       window, PRODUCT_MATRIX-priority line trial, busy/retry, 12h-rush
-       override) + one push_drain_process() per line (drains that line's
-       chute at priority=1) — the class-2 side.
-    8. env.run(until=horizon_s).
+    4. One LinePriorityGate (plain per-line mutex) per line, plus each
+       line's chute (from kenv.kanban_chutes) gets its frozen zone size
+       set from `push_policy` and its insertion methods / pop_next()
+       patched via _install_crew_chute_hooks (self-notifying inserts;
+       pop_next() neutralised — see that function's docstring).
+    5. start_kanban_simulation(kenv, ...) — registers withdrawal_process,
+       day_boundary_process, per-line collection_box_emptying_process,
+       and production_trigger_process EXACTLY as kanban_runner.py does
+       (movement 1's pull side); production_trigger_process itself is
+       harmless here because step 4 already neutralised chute.pop_next().
+    6. One push_dispatch_process() per CustomerDemand row (movement 1's
+       push side — visibility window, PRODUCT_MATRIX-priority line
+       trial, busy/retry, 12h-rush override) + `n_crews` crew_process()
+       instances (movement 2 — the only thing that ever drains a chute;
+       see that function's docstring for Rule 1/1.a/2).
+    7. env.run(until=horizon_s).
+
+    `n_crews` : how many crew_process() workers share the `kenv.lines`
+        pool — e.g. 2 crews across 3 lines. A crew can only ever hold one
+        line's gate at a time, so at most `min(n_crews, len(kenv.lines))`
+        lines are ever being worked simultaneously.
 
     `push_policy` : PushPolicyConfig, editable knobs for the frozen zone
         and the rolling push dispatcher (visibility window, lead-time
@@ -2150,22 +2246,22 @@ def run_mixed(
         chute, and the rest drive push_dispatch_process() directly.
 
     IMPORTANT — reads `kenv.kanban_chutes: dict[int, KanbanChuteResource]`,
-    exposed by build_kanban_environment() (entities_resources_v4.py). Note
+    exposed by build_kanban_environment() (entities_resources_v5.py). Note
     this is a DIFFERENT dict from `kenv.chutes` — that one is the
     raw-material FIFO chute immediately upstream of Beladen, inherited
     unchanged from the push-model SimEnvironment; `kanban_chutes` is the
     per-line, priority-ordered, frozen-zone-aware admission queue this
-    module actually shares with kanban_process_logic.py. This module
-    never constructs a chute itself (that stays entities_resources_v4.py's
+    module and crew_process() actually share. This module never
+    constructs a chute itself (that stays entities_resources_v5.py's
     job) — if the real attribute name ever changes again, run_mixed()
     raises immediately below rather than silently misbehaving.
 
     Live-editing from outside this call (e.g. a frontend/API layer): the
     returned kenv.push_ctx is the actual PushSchedulerContext every push
-    process reads from — mutate kenv.push_ctx.policy's fields directly
-    (or call apply_push_policy(kenv.push_ctx, new_policy) to swap the
-    whole object) while the simulation is running elsewhere (e.g. in a
-    background thread advancing env.run() incrementally). See
+    process AND every crew reads from — mutate kenv.push_ctx.policy's
+    fields directly (or call apply_push_policy(kenv.push_ctx, new_policy)
+    to swap the whole object) while the simulation is running elsewhere
+    (e.g. in a background thread advancing env.run() incrementally). See
     apply_push_policy()'s docstring for exactly which settings take
     effect immediately vs. only for orders that haven't started their
     placement search yet.
@@ -2181,9 +2277,9 @@ def run_mixed(
 
     kenv.gate_activity_log (list[GateActivityEntry]) is the time-indexed
     "what was this line's gate doing at any past instant" log — one
-    entry per completed class-1 batch (appended by the
-    _install_kanban_gate_hook wrapper) or class-2 chunk (appended by
-    push_drain_process), both funneled through the same LinePriorityGate.
+    entry per completed pull card (appended by _run_one_pull_card) or
+    push chunk (appended by _run_push_turn), both funneled through the
+    same LinePriorityGate, regardless of which crew ran them.
     See GateActivityEntry / production_status_at() for the replay
     convention and the known Rüstzeit-vs-producing sub-resolution
     limitation.
@@ -2229,39 +2325,38 @@ def run_mixed(
     horizon_s = max(horizon_s, SIM_HORIZON_S)
 
     gates: dict[int, LinePriorityGate] = {
-        line.line_id: LinePriorityGate(resource=simpy.PriorityResource(env, capacity=1))
+        line.line_id: LinePriorityGate(resource=simpy.Resource(env, capacity=1))
         for line in kenv.lines
     }
     gate_activity_log: list[GateActivityEntry] = []
 
-    # Built here (rather than inline in the ctx = PushSchedulerContext(...)
-    # call below) because _install_pull_only_chute_view() now needs it too
-    # — the same dict is reused for both, not two separate Store sets.
-    push_signals: dict[int, simpy.Store] = {
-        line.line_id: simpy.Store(env) for line in kenv.lines
-    }
+    # ONE shared wake-up signal for every idle crew — see
+    # PushSchedulerContext.activity_signal / crew_process() / this
+    # module's v10 docstring note for why a single Store replaces the
+    # old per-line push_signals/pull_signals pair.
+    activity_signal: simpy.Store = simpy.Store(env)
 
     for chute in chutes.values():
         chute.set_frozen_zone_cards(push_policy.frozen_zone_cards)
-    _install_pull_only_chute_view(chutes, push_signals)
-
-    # Class-1 side: patch BEFORE start_kanban_simulation registers any
-    # process (safe either way — the patched name is only resolved when
-    # production_trigger_process actually reaches that call, not at
-    # env.process()/registration time — but doing it first keeps the
-    # ordering obviously correct).
-    _install_kanban_gate_hook(gates, epoch, gate_activity_log)
+    # Patch BEFORE start_kanban_simulation registers any process (safe
+    # either way — pop_next/push_batch/push_chunk/push_rush_entry are
+    # only resolved when actually called, not at env.process()/
+    # registration time — but doing it first keeps the ordering
+    # obviously correct). See _install_crew_chute_hooks's docstring:
+    # this both neutralises production_trigger_process's own pop_next()
+    # calls and wires the activity_signal notify on every insertion.
+    _install_crew_chute_hooks(chutes, activity_signal)
 
     event_log: list[ScheduleEvent] = []
     # run_one_order() (process_logic_sequential_v3.py) does NOT take an
     # event_log argument — it builds its PackageTracker from
-    # `sim_env.event_log` directly. push_drain_process() calls
-    # run_one_order() with `kenv` as sim_env, so kenv.event_log must
-    # already be THIS shared list before any process (kanban or push)
-    # starts running, or push chunks silently produce no Gantt/
-    # ScheduleEvent entries. (Kanban's own side doesn't need this —
-    # run_one_kanban_batch takes event_log as an explicit parameter,
-    # threaded through by the gate hook.)
+    # `sim_env.event_log` directly. _run_push_turn() calls run_one_order()
+    # with `kenv` as sim_env, so kenv.event_log must already be THIS
+    # shared list before any process (kanban or crew) starts running, or
+    # push chunks silently produce no Gantt/ScheduleEvent entries.
+    # (Kanban's own side doesn't need this — run_one_kanban_batch takes
+    # event_log as an explicit parameter, threaded through directly by
+    # _run_one_pull_card.)
     kenv.event_log = event_log
 
     rt = start_kanban_simulation(
@@ -2283,8 +2378,9 @@ def run_mixed(
               f"earliest date differs from the earliest date across both "
               f"sheets; investigate before trusting this run's results.")
 
-    # Class-2 side: one dispatcher process per demand row, one drain
-    # process per line, both sharing `ctx`.
+    # Movement 1 (push side): one dispatcher process per demand row.
+    # Movement 2 (depletion, both classes): n_crews crew_process()
+    # instances, sharing `ctx` — the only consumers of any line's chute.
     push_unassigned_log: list[UnassignedOrder] = []
     supermarket_overflow_log: list[SupermarketOverflowFlag] = []
     push_delivery_log: list[PushDeliveryRecord] = []
@@ -2300,24 +2396,22 @@ def run_mixed(
     chute_tracker = PushChuteTracker()
     ctx = PushSchedulerContext(
         kenv=kenv, epoch=epoch, policy=push_policy, gates=gates, chutes=chutes,
-        push_signals=push_signals,        # dict built above, reused as-is
-        pull_signals=rt.chute_signal,      # rt now exists — wired for the
-                                            # push->pull cross-wake (see
-                                            # push_drain_process)
+        activity_signal=activity_signal,
         name_to_id={line.line_name: line.line_id for line in kenv.lines},
         active_lines=list(cfg.line_names), verbose=verbose,
         unassigned_log=push_unassigned_log, chunk_size=push_chunk_size,
         exotic_tracker=exotic_tracker, overflow_log=supermarket_overflow_log,
         delivery_log=push_delivery_log, exotic_snapshot_log=exotic_snapshot_log,
         chute_tracker=chute_tracker, gate_activity_log=gate_activity_log,
+        rt=rt,
     )
     for row in cfg.demand:
         env.process(push_dispatch_process(ctx, row))
-    for line in kenv.lines:
-        env.process(push_drain_process(
-            ctx, line.line_id, line.line_name, n_workers,
-            event_log=event_log,
-        ))
+    # Spawned in crew_id order (0, 1, ...) — crew-vs-crew arbitration for
+    # simultaneous idle selection relies on this registration order (see
+    # _select_line_for_crew's docstring).
+    for crew_id in range(n_crews):
+        env.process(crew_process(ctx, crew_id, n_workers, event_log=event_log))
 
     env.run(until=horizon_s)
 
@@ -2331,6 +2425,12 @@ def run_mixed(
     kenv.shortfall_log = rt.shortfall_log
     kenv.rt = rt
     kenv.gates = gates
+    kenv.n_crews = n_crews    # so a caller (e.g. api_server_mixed.py) can
+                               # build a per-crew summary without having to
+                               # infer crew count from which crew_ids
+                               # happened to appear in gate_activity_log
+                               # (a crew that never got any work — e.g.
+                               # more crews than lines — wouldn't appear).
     kenv.push_policy = push_policy
     kenv.push_unassigned_log = push_unassigned_log
     kenv.supermarket_overflow_log = supermarket_overflow_log
@@ -2349,4 +2449,5 @@ if __name__ == "__main__":
     excel = sys.argv[1] if len(sys.argv) > 1 else "ProductionPlanning_v6.xlsx"
     setup = sys.argv[2] if len(sys.argv) > 2 else "HTL_setup_times.xlsx"
     workers = int(sys.argv[3]) if len(sys.argv) > 3 else N_WORKERS
-    run_mixed(excel, setup, n_workers=workers)
+    crews = int(sys.argv[4]) if len(sys.argv) > 4 else 2
+    run_mixed(excel, setup, n_workers=workers, n_crews=crews)

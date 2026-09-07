@@ -177,6 +177,11 @@
   .gantt-seg.other{background:#D7DCE3;color:#6B7280;}
   .gantt-seg .seg-text{padding:0 6px;text-overflow:ellipsis;overflow:hidden;}
   .gantt-seg .seg-rate{font-weight:600;opacity:.9;}
+  /* Crew tab filter: "blend" (dim) segments NOT produced by the selected
+     crew, rather than hiding them, so the rest of the schedule stays
+     visible for context; the matching crew's segments get a subtle outline. */
+  .gantt-seg.crew-dim{opacity:.24;filter:grayscale(55%);}
+  .gantt-seg.crew-match{box-shadow:inset 0 0 0 2px #111827, 0 6px 18px rgba(0,0,0,.25);}
 
   .tooltip{position:fixed;z-index:50;background:#1B2330;color:#fff;padding:8px 11px;border-radius:8px;font-size:11.5px;line-height:1.5;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25);max-width:230px;display:none;}
   .tooltip b{color:#fff;}
@@ -346,6 +351,15 @@
         </div>
         <div class="hint" style="margin-top:-6px;margin-bottom:13px;">Used to label the Gantt axis with real clock times and dates.</div>
         <div class="field">
+          <label>Number of crews</label>
+          <select id="inNCrews">
+            <option value="1">1 Crew</option>
+            <option value="2" selected>2 Crews</option>
+            <option value="3">3 Crews</option>
+          </select>
+          <div class="hint" style="margin-top:2px;">How many <code>crew_process()</code> workers share the plant's lines this run — each holds at most one line at a time.</div>
+        </div>
+        <div class="field">
           <label>Push chunk size</label>
           <input type="number" id="inChunkSize" value="200" min="1" />
         </div>
@@ -457,6 +471,7 @@
             <div><h2>Combined schedule, per line</h2><p id="allGanttSubline">Every class-1 (Kanban) and class-2 (push) segment, on one shared timeline per line.</p></div>
             <div class="legend" id="allLegend"></div>
           </div>
+          <div id="crewtabs-all-gantt"></div>
           <div id="daytabs-all-gantt"></div>
           <div id="allGanttContainer"><div class="empty-state"><div class="icon">📊</div><h3>No simulation run yet</h3><p>Click <b>Run Mixed Simulation</b> in the sidebar. This calls <code>POST /api/simulate_mixed</code> — a real SimPy pass over HTL3 / HTL5 / HTL6 sharing one clock across both production classes.</p></div></div>
         </div>
@@ -507,6 +522,7 @@
             <div><h2>Kanban (class-1) schedule, per line</h2><p>Same timeline as "All Production" — non-Kanban job segments are shown as grey <b>other</b> blocks rather than hidden, so gaps stay honest about what's really running.</p></div>
             <div class="legend" id="pullLegend"></div>
           </div>
+          <div id="crewtabs-pull-gantt"></div>
           <div id="daytabs-pull-gantt"></div>
           <div id="pullGanttContainer"><div class="empty-state"><div class="icon">🔁</div><h3>No simulation run yet</h3><p>Run a mixed simulation to see the pull-only view.</p></div></div>
         </div>
@@ -586,6 +602,7 @@
             <div><h2>Push (class-2) schedule, per line</h2><p>Same timeline as "All Production" — non-push job segments are shown as grey <b>other</b> blocks rather than hidden.</p></div>
             <div class="legend" id="pushLegend"></div>
           </div>
+          <div id="crewtabs-push-gantt"></div>
           <div id="daytabs-push-gantt"></div>
           <div id="pushGanttContainer"><div class="empty-state"><div class="icon">📦</div><h3>No simulation run yet</h3><p>Run a mixed simulation to see the push-only view.</p></div></div>
         </div>
@@ -645,6 +662,13 @@ let dayTabState = {
   'pull-gantt':'full', 'pull-kpi':'full', 'pull-cardflow':'full', 'pull-shortfall':'full', 'pull-supermarket':'full',
   'push-gantt':'full', 'push-kpi':'full',
 };
+
+// Which crew tab is active per Gantt panel: null = "All crews" (no
+// highlight/dim), or a 0-based crew_id to highlight that crew's segments
+// and blend (dim) everyone else's — the crew-based counterpart to
+// dayTabState, scoped to just the three Gantt panels since KPI/other
+// views aren't per-segment.
+let crewTabState = { 'all-gantt': null, 'pull-gantt': null, 'push-gantt': null };
 
 const GANTT_PX_PER_DAY = 400; // full-span Gantt zoom: px per 24h-of-time_unit, tuned so ~2–2.5 days fit before horizontal scroll kicks in
 
@@ -837,6 +861,50 @@ function renderDayTabs(key, horizon, unit){
   el.innerHTML = html;
 }
 
+// How many crews to offer tabs for: prefer the ACTUAL run's crew count
+// (lastResult.summary.n_crews, set from the request that produced this
+// data) so the tabs always match what really ran, even if the sidebar
+// select has since been changed for the next run. Falls back to
+// kpi_by_crew's key count for older payload shapes.
+function nCrewsForTabs(){
+  if(lastResult && lastResult.summary && lastResult.summary.n_crews != null){
+    return lastResult.summary.n_crews;
+  }
+  if(lastResult && lastResult.kpi_by_crew){
+    return Object.keys(lastResult.kpi_by_crew).length;
+  }
+  return 0;
+}
+
+// Renders the "All crews / Crew 1 / Crew 2 / …" pill row into
+// #crewtabs-<key> — the per-Gantt-panel counterpart to renderDayTabs().
+// Selecting a crew doesn't remove other crews' segments, it dims them
+// (see renderGanttInto's crewFilter handling) so the rest of the
+// schedule stays visible for context.
+function renderCrewTabs(key){
+  const el = document.getElementById('crewtabs-' + key);
+  if(!el) return;
+  const n = nCrewsForTabs();
+  if(!n || n < 1){ el.innerHTML = ''; return; }
+
+  let active = crewTabState[key];
+  if(active != null && active >= n) active = null; // stale pick from a run with fewer crews
+  crewTabState[key] = active;
+
+  let html = `<div class="daytabs"><span class="daytabs-label">Crew</span>
+    <button class="daytab ${active==null?'active':''}" onclick="setCrewTab('${key}', null)">All crews</button>`;
+  for(let c=0; c<n; c++){
+    html += `<button class="daytab ${active===c?'active':''}" onclick="setCrewTab('${key}', ${c})">Crew ${c+1}</button>`;
+  }
+  html += `</div>`;
+  el.innerHTML = html;
+}
+function setCrewTab(key, val){
+  crewTabState[key] = val;
+  const fn = DAY_TAB_RENDERERS[key];
+  if(fn) fn();
+}
+
 function absClockLabel(elapsed, unit){
   const dayStartHour = getDayStartHour();
   const elapsedHours = elapsedToHours(elapsed, unit);
@@ -850,11 +918,28 @@ function productionTypeLabel(seg){
   if(cls === 'push') return 'Push';
   return null;
 }
+// Which crew_process(crew_id=...) instance produced this segment (v10) —
+// resolved defensively across possible payload key names, mirroring
+// segSimClass()'s multi-key fallback, since crew attribution on Gantt job
+// segments is newer than sim_class/simClass and the exact key
+// schedule_events.build_gantt_payload settles on may vary. crew_id is
+// 0-based on the backend (see kpi_by_crew / GateActivityEntry), so this
+// returns the 0-based id — use crewLabel() for the 1-based display form.
+function segCrewId(seg){
+  const v = seg.crewId ?? seg.crew_id ?? seg.crew ?? null;
+  return v == null ? null : Number(v);
+}
+function crewLabel(seg){
+  const id = segCrewId(seg);
+  return id == null ? null : `Crew ${id + 1}`;
+}
 function jobTooltip(seg, unit){
   const typeLabel = productionTypeLabel(seg);
+  const crewLbl = crewLabel(seg);
   return `<b>${seg.sachnummer||'—'}</b><br>`+
     `${seg.kunde? 'Customer: '+seg.kunde+'<br>':''}`+
     `${seg.productClass? 'Class: '+seg.productClass+'<br>':''}`+
+    `${crewLbl? 'Crew: '+crewLbl+'<br>':''}`+
     `${typeLabel? 'Type: '+typeLabel+'<br>':''}`+
     `Units: ${seg.units}/${seg.packageSize}<br>`+
     `Rate: ${seg.rate!=null? seg.rate.toFixed(1)+' pcs/h':'—'}<br>`+
@@ -959,9 +1044,37 @@ async function checkHealth(){
     const data = await res.json();
     setStatus('ok', `Connected · lines: ${data.lines.join(', ')}`);
     loadPushPolicy();
+    loadParameters();
   }catch(e){
     setStatus('bad', 'API unreachable — check base URL / CORS / server');
   }
+}
+
+/* =========================================================================
+   Run parameters — GET /api/parameters (crew_options / default_n_crews).
+   Non-fatal if this fails or the shape is unexpected: the "Number of
+   crews" select already has a sane static 1/2/3 fallback baked into the
+   HTML, this just re-syncs it with what the connected backend actually
+   allows (crew_options is bounded by line count server-side).
+   ========================================================================= */
+async function loadParameters(){
+  try{
+    const res = await fetch(`${API_BASE}/api/parameters`);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    populateCrewOptions(data.crew_options, data.default_n_crews);
+  }catch(e){
+    // Silent — sidebar keeps its static fallback options.
+  }
+}
+function populateCrewOptions(crewOptions, defaultNCrews){
+  const sel = document.getElementById('inNCrews');
+  if(!sel || !Array.isArray(crewOptions) || !crewOptions.length) return;
+  const prevValue = sel.value;
+  sel.innerHTML = crewOptions.map(n =>
+    `<option value="${n}">${n} Crew${n===1?'':'s'}</option>`).join('');
+  const stillValid = crewOptions.map(String).includes(prevValue);
+  sel.value = stillValid ? prevValue : String(defaultNCrews ?? crewOptions[0]);
 }
 
 /* =========================================================================
@@ -1050,6 +1163,7 @@ async function runMixedSimulation(){
     n_workers: parseInt(document.getElementById('inWorkers').value, 10),
     seed: parseInt(document.getElementById('inSeed').value, 10) || 42,
     day_start_hour: parseInt(document.getElementById('inDayStartHour').value, 10) || 6,
+    n_crews: parseInt(document.getElementById('inNCrews').value, 10) || 2,
     push_chunk_size: parseInt(document.getElementById('inChunkSize').value, 10) || 50,
     horizon_s: horizonRaw === '' ? null : parseFloat(horizonRaw) * 3600.0,
     time_unit: 'h',
@@ -1085,6 +1199,9 @@ function onSimulateComplete(data){
 
   // Reset time-range tabs to "Full span" for a fresh run.
   Object.keys(dayTabState).forEach(k => dayTabState[k] = 'full');
+  // Reset crew tabs to "All crews" too — a crew_id highlighted from a
+  // previous run may not even exist under this run's n_crews.
+  Object.keys(crewTabState).forEach(k => crewTabState[k] = null);
 
   // All Production
   renderAllGanttPanel();
@@ -1177,7 +1294,7 @@ function segSimClass(seg){
   // serialization in schedule_events.py isn't visible from the frontend.
   return seg.simClass ?? seg.sim_class ?? seg.production_class ?? null;
 }
-function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange){
+function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange, crewFilter){
   if(!gantt || !gantt.lines || !gantt.lines.length){
     document.getElementById(containerId).innerHTML = '<div class="empty-state"><p>No gantt data.</p></div>';
     return;
@@ -1318,7 +1435,14 @@ function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange)
       }else if(widthPct > 5){
         inner = `<span class="seg-text">${seg.rate!=null? seg.rate.toFixed(0):''}</span>`;
       }
-      return `<div class="gantt-seg job" style="left:${leftPct}%;width:${widthPct}%;background:${bg}"
+      // Crew tab filter: blend (dim) segments NOT produced by the
+      // selected crew rather than dropping them, so the schedule stays
+      // legible for context — see renderCrewTabs()'s docstring.
+      let crewClass = '';
+      if(crewFilter != null){
+        crewClass = (segCrewId(seg) === crewFilter) ? ' crew-match' : ' crew-dim';
+      }
+      return `<div class="gantt-seg job${crewClass}" style="left:${leftPct}%;width:${widthPct}%;background:${bg}"
         onmouseenter="showTooltip(event, ${JSON.stringify(jobTooltip(seg, gantt.time_unit)).replace(/"/g,'&quot;')})"
         onmouseleave="hideTooltip()">${inner}</div>`;
     }).join('');
@@ -1350,12 +1474,14 @@ function renderGanttPanel(key, containerId, legendId, gantt, classFilter){
   if(!gantt || !gantt.lines || !gantt.lines.length){
     document.getElementById(containerId).innerHTML = '<div class="empty-state"><p>No gantt data.</p></div>';
     const el = document.getElementById('daytabs-' + key); if(el) el.innerHTML = '';
+    const cel = document.getElementById('crewtabs-' + key); if(cel) cel.innerHTML = '';
     return;
   }
   renderDayTabs(key, gantt.horizon, gantt.time_unit);
+  renderCrewTabs(key);
   const day = dayTabState[key] || 'full';
   const windowRange = (day === 'full') ? null : dayWindowFor(day, gantt.time_unit, gantt.horizon);
-  renderGanttInto(containerId, legendId, gantt, classFilter, windowRange);
+  renderGanttInto(containerId, legendId, gantt, classFilter, windowRange, crewTabState[key]);
 }
 function renderAllGanttPanel(){
   if(!lastResult) return;

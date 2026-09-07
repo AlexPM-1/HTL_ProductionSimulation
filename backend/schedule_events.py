@@ -106,6 +106,27 @@ class ScheduleEvent:
                        (mixed_runner.py, for the mixed Option-3 run) —
                        see that module for why it's tagged post-hoc
                        rather than threaded through the constructor.
+    crew_id         : (v10) 0-based id of the crew_process(crew_id=...)
+                       instance that was holding this line's gate for
+                       this segment, or None for callers that don't run
+                       the crew-based depletion model at all (pre-v10
+                       kanban-only/push-only runners), or for a "job"
+                       segment mixed_runner.py hasn't back-filled yet.
+                       Same post-hoc-population idiom as sim_class above:
+                       PackageTracker._emit() has no visibility into
+                       which crew_process() call produced a given
+                       package, so mixed_runner.py is expected to tag
+                       each ScheduleEvent's crew_id onto the object
+                       after the fact (e.g. by matching each job event's
+                       [start_s, end_s] / line_id against the
+                       overlapping kenv.gate_activity_log entry, the
+                       same log GateActivityEntry.crew_id already comes
+                       from) — mirroring exactly how sim_class already
+                       gets stamped on from the kanban/push product-set
+                       split. Until that back-fill exists on the caller
+                       side, this stays None and the Gantt payload's
+                       "crewId" simply comes back null, same as any
+                       other pre-v10 run.
     """
     line_name:        str
     line_id:           int
@@ -122,6 +143,7 @@ class ScheduleEvent:
     to_sachnummer:      Optional[str] = None
     note:               Optional[str] = None
     sim_class:          Optional[SimClass] = None
+    crew_id:            Optional[int] = None
 
     @property
     def duration_s(self) -> float:
@@ -142,15 +164,16 @@ class ScheduleEvent:
 
     def __repr__(self) -> str:
         tag = f" <{self.sim_class}>" if self.sim_class else ""
+        crew_tag = f" crew{self.crew_id}" if self.crew_id is not None else ""
         if self.event_type == "job":
             return (
-                f"ScheduleEvent(job{tag} {self.sachnummer!r} on {self.line_name} "
+                f"ScheduleEvent(job{tag}{crew_tag} {self.sachnummer!r} on {self.line_name} "
                 f"[{self.start_s:.1f}, {self.end_s:.1f}]s  "
                 f"{self.units_in_segment}/{self.package_size} pcs  "
                 f"rate={self.throughput_pcs_per_h} pcs/h)"
             )
         return (
-            f"ScheduleEvent(setup{tag} {self.from_sachnummer!r}->{self.to_sachnummer!r} "
+            f"ScheduleEvent(setup{tag}{crew_tag} {self.from_sachnummer!r}->{self.to_sachnummer!r} "
             f"on {self.line_name} [{self.start_s:.1f}, {self.end_s:.1f}]s "
             f"{self.n_workers}MA)"
         )
@@ -332,6 +355,11 @@ def build_gantt_payload(
     a single plain "idle" segment, exactly as before — no change for
     older callers (kanban-only/push-only runners) or shift-less
     workbooks.
+
+    crewId (v10): every non-idle/off_shift segment's dict carries
+    "crewId", a straight pass-through of the source ScheduleEvent's
+    crew_id (see its docstring) — None/null until mixed_runner.py
+    back-fills it post-construction, same as simClass.
     """
     divisor = {"h": 3600.0, "min": 60.0, "s": 1.0}[time_unit]
 
@@ -387,6 +415,12 @@ def build_gantt_payload(
                 "start": round(e.start_s / divisor, 4),
                 "duration": round(max(e.duration_s, 0.0) / divisor, 4),
                 "simClass": e.sim_class,
+                # v10: which crew_process(crew_id=...) instance produced
+                # this segment — see ScheduleEvent.crew_id's docstring for
+                # the post-hoc-population caveat. None (-> JSON null) for
+                # any run/segment that hasn't been back-filled, exactly
+                # like simClass above on a pre-mixed run.
+                "crewId": e.crew_id,
             }
             if e.event_type == "job":
                 seg.update({
