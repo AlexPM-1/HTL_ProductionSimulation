@@ -1,8 +1,18 @@
+#Python
+*.__pycache__
+__pycache__/
+.venv/
+venv
+
+#Environment
 .env
 .venv
-.pycache
-.__pycache__
+!.env.example
+
+#OS/editor files
+.vscode/
+
+#Fileszip
 *.txt
-.vscode
 *.zip
 *.json

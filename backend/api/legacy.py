@@ -24,7 +24,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from api.app import app, EXCEL_PATH, SETUP_XLSX_PATH, _cfg
+from api.app import app, EXCEL_PATH, SETUP_XLSX_PATH, PRODUCT_MASTER_PATH,_cfg
 from api.runs import run_store
 from api.schemas import SimulateMixedRequest
 from domain.constants import SIM_HORIZON_S, DAY_LENGTH_S
@@ -64,6 +64,7 @@ def simulate_mixed(req: SimulateMixedRequest):
         kenv = run_mixed(
             EXCEL_PATH,
             SETUP_XLSX_PATH,
+            PRODUCT_MASTER_PATH,
             n_workers=req.n_workers,
             n_crews=req.n_crews,
             seed=req.seed,

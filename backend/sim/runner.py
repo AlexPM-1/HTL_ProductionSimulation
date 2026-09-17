@@ -160,6 +160,7 @@ def _install_crew_chute_hooks(
 def run_mixed(
     excel_path: str,
     setup_times_path: str,
+    product_master_path: str,
     n_workers: int = N_WORKERS,
     n_crews: int = 2,
     seed: int = SEED,
@@ -263,7 +264,7 @@ def run_mixed(
     if push_policy is None:
         push_policy = PushPolicyConfig()
 
-    cfg = load_config(excel_path, setup_times_path)
+    cfg = load_config(excel_path, setup_times_path, product_master_path)
     # domain.epoch.compute_epoch() is the fixed domain.constants.SIM_START
     # constant — both this module and RunContext.for_kanban()
     # (sim/context.py) derive their epoch from the exact same call, so

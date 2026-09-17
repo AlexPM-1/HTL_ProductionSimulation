@@ -15,7 +15,7 @@ import simpy
 
 from sim.resources.environment import KanbanSimEnvironment
 from sim.resources.stations import StationResource, BufferResource
-from domain.orders import OrderRecord
+from domain.orders import OrderRecord, KanbanBatchSpec
 from domain.products import _active_buffer_sequence, ProductClass
 from telemetry.packaging import PackageTracker
 from telemetry.recorder import Recorder
@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 def run_one_kanban_batch(
     kenv: KanbanSimEnvironment,
     line_id: int,
-    current_rec: "OrderRecord | None",
-    order_rec: OrderRecord,
+    current_rec: "OrderRecord | KanbanBatchSpec | None",
+    order_rec: KanbanBatchSpec,
     n_workers: int,
     on_finish,
     verbose: bool = True,
@@ -43,8 +43,8 @@ def run_one_kanban_batch(
 ):
     """
     SimPy generator - run ONE Kanban-released batch to completion on
-    *line_id*, and return the OrderRecord to use as `current_rec` for the
-    NEXT batch's changeover lookup.
+    *line_id*, and return the KanbanBatchSpec to use as `current_rec` for
+    the NEXT batch's changeover lookup.
 
     This mirrors sim.produce.run_order.run_one_order()'s thin
     orchestration (changeover -> resolve station/buffer lists -> launch
@@ -198,26 +198,25 @@ def run_one_kanban_batch(
 
 
 def _make_kanban_order_record(rt: "RunContext", line_name: str, product_type: str,
-                               quantity: int) -> Optional[OrderRecord]:
+                               quantity: int) -> Optional[KanbanBatchSpec]:
     """
-    Build the (duck-typed but real) OrderRecord run_one_kanban_batch()
-    needs, from the domain.products catalogue. Returns None if the
-    product turns out not to be feasible on this line (shouldn't happen —
-    build_kanban_environment only creates a (line, product) Supermarket
-    for eligible products — but checked defensively).
+    Build the (duck-typed) KanbanBatchSpec run_one_kanban_batch() needs,
+    from the domain.products catalogue. Returns None if the product turns
+    out not to be feasible on this line (shouldn't happen — build_kanban_
+    environment only creates a (line, product) Supermarket for eligible
+    products — but checked defensively).
+
+    This is NOT the customer-facing OrderRecordPull tracked in
+    kenv.order_registry (see SimEnvironment.create_order()) — it's the
+    internal "what to produce" spec for one batch, so it uses the
+    dedicated domain.orders.KanbanBatchSpec rather than OrderRecord (see
+    that class's docstring for why the two are kept separate).
     """
     info = rt.product_info(product_type)
     line_class = info.lines.get(line_name)
     if line_class is None or not line_class.station_names:
         return None
-    return OrderRecord(
-        # Throwaway internal "what to produce" record for this batch —
-        # NOT the customer-facing OrderRecordPull tracked in
-        # kenv.order_registry (see SimEnvironment.create_order()), so it
-        # has no real order_id to assign and nothing ever reads this
-        # field off it. -1 is a sentinel marking "not a registered
-        # order" rather than a valid sequential id.
-        order_id=-1,
+    return KanbanBatchSpec(
         period_label="Kanban",
         sachnummer=product_type,
         kunde=info.kunde,

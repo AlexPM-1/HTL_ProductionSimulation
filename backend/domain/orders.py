@@ -225,6 +225,45 @@ class OrderRecordPush(OrderRecord):
 
 
 @dataclass
+class KanbanBatchSpec:
+    """
+    The internal "what to produce on this line, right now" object for one
+    Kanban batch — built once per batch by
+    sim.produce.run_kanban_batch._make_kanban_order_record() and threaded
+    through changeover() / part_lifecycle() / LinePriorityGate.current_rec
+    purely by duck-typing (every call site along that path reads
+    `.sachnummer` / `.quantity` / etc. off whatever object it's handed via
+    plain attribute access or getattr(), never an isinstance() check
+    against OrderRecord — see changeover.py's own "duck-typed" docstring).
+
+    NOT an OrderRecord (or subclass): it is not a customer order, 
+    is never registered in SimEnvironment.order_registry, and has
+    no order_id / due_date / assignments / production_type — none of
+    which mean anything for "the batch spec currently set up on this
+    line's gate". Kept as its own small dataclass so future order-
+    tracking-only fields added to OrderRecord (order_id, assignments,
+    production_type, ...) never again require a throwaway value
+    here just to satisfy an unrelated constructor.
+
+    Field set mirrors exactly what _make_kanban_order_record() populates
+    and what downstream readers (changeover._resolve_setup_time_s,
+    sim.produce.part_lifecycle, sim.drain.pull_turn, api/legacy.py's
+    gate_status) actually use: sachnummer, kunde, product_class, quantity,
+    assigned_line, freigabe, station_sequence, feasible_lines, note.
+    """
+    period_label: str
+    sachnummer: str
+    kunde: str
+    product_class: str
+    quantity: int
+    assigned_line: str
+    freigabe: str
+    station_sequence: list[str]
+    feasible_lines: list[str]
+    note: Optional[str] = None
+
+
+@dataclass
 class UnassignedOrder:
     """
     An order from CustomerDemand that could not be matched to any line.

@@ -13,7 +13,7 @@ from typing import Optional
 
 import simpy
 
-from domain.orders import OrderRecord
+from domain.orders import KanbanBatchSpec, OrderRecord
 
 
 @dataclass
@@ -33,15 +33,21 @@ class LinePriorityGate:
         here. Not read by any control-flow logic — kept purely as a
         bookkeeping timestamp for anything that wants "when did this
         line last do something".
-    current_rec : OrderRecord last executed on this line, across BOTH
+    current_rec : whatever was last executed on this line, across BOTH
         classes — the changeover() argument. Read/written by whichever
         crew is currently holding this line, regardless of whether it's
         running a push or pull turn — see sim.drain.push_turn.run_push_turn
-        / sim.drain.pull_turn._run_one_pull_card.
+        / sim.drain.pull_turn._run_one_pull_card. On the push side this is
+        a real, customer-tracked OrderRecordPush; on the pull side it's
+        the internal KanbanBatchSpec (see that class's docstring for why
+        it isn't an OrderRecord). Every reader of this field (changeover,
+        api/legacy.py's gate_status, pull_turn's changeover-detection)
+        only ever duck-types off `.sachnummer` / `getattr(...)`, so both
+        types are interchangeable in practice.
     """
     resource: simpy.Resource
     last_activity_t: float = 0.0
-    current_rec: Optional[OrderRecord] = None
+    current_rec: Optional["OrderRecord | KanbanBatchSpec"] = None
 
     def touch(self, t: float) -> None:
         self.last_activity_t = t
