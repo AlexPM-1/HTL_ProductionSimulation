@@ -408,6 +408,18 @@ def _withdraw_push_chunk_process(ctx: RunContext, line_name: str, chunk: OrderRe
 
     yield from tracker.withdraw_chunk(line_name, chunk.sachnummer, env)
 
+    chunk.customer_withdrawal_date = ctx.epoch + _dt.timedelta(seconds=env.now)
+    # Mirror onto the registry entry — see the matching comment in
+    # sim.drain.push_turn.run_push_turn() for why `chunk` itself isn't
+    # the object reports.all.order_routing reads.
+    _reg_order = ctx.kenv.order_registry.get(chunk.order_id)
+    if _reg_order is not None:
+        _reg_order.customer_withdrawal_date = (
+            chunk.customer_withdrawal_date
+            if _reg_order.customer_withdrawal_date is None
+            else max(_reg_order.customer_withdrawal_date, chunk.customer_withdrawal_date)
+        )
+
     if ctx.exotic_snapshot_log is not None:
         # Same "one reading per physical slot on this line, right after
         # the mutation" convention _deposit_push_chunk_to_supermarket uses

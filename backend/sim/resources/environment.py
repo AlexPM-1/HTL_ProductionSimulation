@@ -18,6 +18,7 @@ from typing import Optional
 import simpy
 
 from domain.config import SimConfig
+from domain.orders import OrderRecord, OrderRecordPull, OrderRecordPush
 from domain.products import ProductClass
 from telemetry.records import ScheduleEvent
 
@@ -53,6 +54,18 @@ class SimEnvironment:
                 → used for KPI calculation
     parts_in_wip : list of Part objects currently in the system
     part_counter : global incrementing ID
+    order_registry : dict[order_id → OrderRecord] — every OrderRecordPull
+                or OrderRecordPush ever created (both subclasses of
+                OrderRecord — see domain.orders), for BOTH push and pull
+                orders (deliberately kept here on the base class, not on
+                KanbanSimEnvironment, so a mixed run shares ONE id
+                sequence / ONE lookup table across both order types
+                instead of two disjoint ones). Populated by
+                create_order() below; read back by reports that need to
+                join an order against the KanbanCard.history entries or
+                GateActivityEntry rows it produced.
+    order_counter : global incrementing ID, mirrors part_counter/
+                KanbanSimEnvironment.card_counter
     event_log : list of ScheduleEvent (see telemetry/records.py) — every
                 changeover and finished package, across all lines, in the
                 order they occur. Populated by sim.produce (changeover()
@@ -83,6 +96,8 @@ class SimEnvironment:
     parts_out: list[Part]       = field(default_factory=list)
     parts_in_wip: list[Part]    = field(default_factory=list)
     part_counter: int           = 0
+    order_registry: dict[int, OrderRecord] = field(default_factory=dict)
+    order_counter: int          = 0
     event_log: list[ScheduleEvent] = field(default_factory=list)
     inventories: dict[str, dict[str, InventoryResource]] = field(default_factory=dict)
     chutes: dict[str, dict[str, ChuteResource]] = field(default_factory=dict)
@@ -184,6 +199,69 @@ class SimEnvironment:
         if part in self.parts_in_wip:
             self.parts_in_wip.remove(part)
         self.parts_out.append(part)
+
+    def next_order_id(self) -> int:
+        """Thread-safe (single-thread SimPy) unique, sequential order ID —
+        mirrors next_part_id() / KanbanSimEnvironment.next_card_id()."""
+        self.order_counter += 1
+        return self.order_counter
+
+    def create_order(
+        self,
+        kind: str,
+        sachnummer: str,
+        kunde: str,
+        product_class: str,
+        quantity: int,
+        assigned_line: str,
+        freigabe: str,
+        station_sequence: list[str],
+        feasible_lines: list[str],
+        period_label: str = "",
+        note: Optional[str] = None,
+        due_date=None,
+    ) -> OrderRecord:
+        """
+        Factory method: create a new OrderRecordPull or OrderRecordPush
+        (picked via `kind`, "pull" | "push"), register it in
+        order_registry, and return it. order_id is permanent and
+        sequential — callers should hold onto and reuse this same
+        OrderRecord (or, for a chunked push order, copy its order_id onto
+        every chunk) rather than minting a fresh id per chunk. Mirrors
+        create_part()/create_card(); lives on the base class so ONE
+        counter/registry is shared across push and pull orders alike.
+
+        `kind` picks the concrete subclass — `production_type` on the
+        result is fixed by that subclass, never passed in directly (see
+        domain.orders.OrderRecordPull / OrderRecordPush).
+
+        `assignments` is deliberately left at its default (empty list) —
+        it's populated afterwards, as production actually happens, via
+        OrderRecord.record_assignment(), not at creation time.
+        """
+        if kind == "pull":
+            cls = OrderRecordPull
+        elif kind == "push":
+            cls = OrderRecordPush
+        else:
+            raise ValueError(f"kind must be 'pull' or 'push', got {kind!r}")
+
+        order = cls(
+            order_id=self.next_order_id(),
+            period_label=period_label,
+            sachnummer=sachnummer,
+            kunde=kunde,
+            product_class=product_class,
+            quantity=quantity,
+            assigned_line=assigned_line,
+            freigabe=freigabe,
+            station_sequence=station_sequence,
+            feasible_lines=feasible_lines,
+            note=note,
+            due_date=due_date,
+        )
+        self.order_registry[order.order_id] = order
+        return order
 
     def log_event(self, event: ScheduleEvent) -> None:
         """

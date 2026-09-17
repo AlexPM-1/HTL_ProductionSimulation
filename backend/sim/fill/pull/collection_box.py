@@ -58,6 +58,9 @@ def collection_box_emptying_process(rt: RunContext, line_id: int, verbose: bool 
             bc.add(card)
             card.record_transition("in_batch_collector", env.now)
             touched_products.add(card.product_type)
+            if card.current_history is not None:
+                card.current_history.t_collection_box_end = round(env.now, 3)
+                card.current_history.t_batch_collector_start = round(env.now, 3)
 
         if verbose:
             print(f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "
@@ -69,6 +72,9 @@ def collection_box_emptying_process(rt: RunContext, line_id: int, verbose: bool 
                 released = bc.pop_batch(product_type)
                 for c in released:
                     c.record_transition("released_to_chute", env.now)
+                    if c.current_history is not None:
+                        c.current_history.t_batch_collector_end = round(env.now, 3)
+                        c.current_history.t_chute_start = round(env.now, 3)
                 chute.push_batch(product_type, released)
                 if verbose:
                     print(f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "

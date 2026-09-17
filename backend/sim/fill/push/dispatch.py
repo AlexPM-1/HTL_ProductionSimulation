@@ -191,7 +191,8 @@ def push_dispatch_process(ctx: RunContext, row):
         f"RUSH placement (<= {ctx.policy.rush_threshold_h}h before due date)"
         if rush else None
     )
-    order = build_push_order_record(row, info, assigned_line, due_dt, note=note)
+    order = build_push_order_record(kenv, row, info, assigned_line, due_dt, note=note)
+    order.record_assignment(assigned_line)
 
     line_id = ctx.line_id(assigned_line)
     chute = ctx.chutes[line_id]

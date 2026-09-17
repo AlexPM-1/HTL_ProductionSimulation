@@ -61,7 +61,33 @@ def withdrawal_process(rt: RunContext, verbose: bool = True):
             start_t = (dt - rt.sim_epoch).total_seconds()
         else:
             start_t = env.now
-        env.process(_withdrawal_stream(rt, evt, start_t, verbose))
+
+        # One customer-facing OrderRecordPull per CustomerDemandKanban
+        # row, created up front (before any of its cards are actually
+        # withdrawn) so every card withdrawn for this row can be tagged
+        # with the same order_id. due_date uses the row's own (Date,
+        # Time) when it parses as an absolute timestamp; None (no due
+        # date known) otherwise — matches OrderRecord.due_date's "None
+        # for orders where no due date applies/is known" convention.
+        order = kenv.create_order(
+            kind="pull",
+            sachnummer=evt.product,
+            kunde="",
+            product_class="",
+            quantity=evt.quantity,
+            # `assigned_line` is kept blank at creation time for a pull
+            # order — see OrderRecord.assigned_line's docstring: pull
+            # orders can be fulfilled by more than one line's Supermarket,
+            # so `assignments` (populated per card, as production
+            # happens) is the authoritative multi-line picture, not this
+            # legacy single-line field.
+            assigned_line="",
+            freigabe="",
+            station_sequence=[],
+            feasible_lines=[],
+            due_date=dt,
+        )
+        env.process(_withdrawal_stream(rt, evt, order.order_id, start_t, verbose))
 
 
 def _n_cards_for_row(rt: RunContext, evt: "KanbanWithdrawalEvent") -> int:
@@ -92,11 +118,16 @@ def _n_cards_for_row(rt: RunContext, evt: "KanbanWithdrawalEvent") -> int:
 
 
 def _withdrawal_stream(rt: RunContext, evt: "KanbanWithdrawalEvent",
-                        start_t: float, verbose: bool):
+                        order_id: int, start_t: float, verbose: bool):
     """
     One independent, repeating card-withdrawal stream for a single
     CustomerDemandKanban row — see withdrawal_process()'s docstring for
     the overall rule this implements.
+
+    `order_id` is the OrderRecordPull created once for this row (see
+    withdrawal_process()) — every card withdrawn by this stream is
+    tagged with it, so all cards fulfilling the same customer withdrawal
+    event join back to the same order.
 
     Sleeps until `start_t`, then withdraws one card every
     cfg.kanban_timing.withdrawal_cadence_min minutes (workbook default:
@@ -133,10 +164,10 @@ def _withdrawal_stream(rt: RunContext, evt: "KanbanWithdrawalEvent",
             print(f"  [t={env.now:10.1f}] Withdrawal tick — {evt.product!r} "
                   f"card {i + 1}/{n_cards} (downstream {evt.line_id!r}, "
                   f"row {evt.date} {evt.time})")
-        env.process(_withdraw_one_card(rt, evt.product, verbose))
+        env.process(_withdraw_one_card(rt, evt.product, order_id, verbose))
 
 
-def _withdraw_one_card(rt: RunContext, product_type: str, verbose: bool):
+def _withdraw_one_card(rt: RunContext, product_type: str, order_id: int, verbose: bool):
     """
     Withdraw exactly ONE card's worth (one whole batch) of `product_type`.
 
@@ -184,8 +215,12 @@ def _withdraw_one_card(rt: RunContext, product_type: str, verbose: bool):
         rt.record_shortfall(line_id, product_type, shortfall_start, env.now)
 
     sm.record_withdrawal()
-    rt.record_supermarket(line_id, product_type, "withdrawal", sm)
+    rt.record_supermarket(
+        line_id, product_type, "withdrawal", sm,
+        kanban_card_id=card.card_id,
+    )
     card.record_transition("withdrawn", env.now)
+    card.start_order_history(order_id, env.now)
 
     # TRANSPORT-TIME HOOK: time to physically carry the card+batch from
     # the supermarket to the collection box would be
@@ -193,3 +228,4 @@ def _withdraw_one_card(rt: RunContext, product_type: str, verbose: bool):
     cb = kenv.collection_box_for(line_id)
     cb.add(card)
     card.record_transition("in_collection_box", env.now)
+    card.current_history.t_collection_box_start = round(env.now, 3)

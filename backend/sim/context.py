@@ -83,6 +83,13 @@ class RunContext:
     daily_log: list = field(default_factory=list)                 # list[dict]
     shortfall_log: list = field(default_factory=list)             # list[ShortfallEvent]
     _product_info_cache: dict = field(default_factory=dict, repr=False)
+    # (line_id, product_type) -> last n_available seen, used only to
+    # derive SupermarketSnapshot.delta_qty automatically — same
+    # bookkeeping telemetry.recorder.Recorder keeps, duplicated here
+    # because pull-side call sites (sim/fill/pull/*) call
+    # rt.record_supermarket() directly on this RunContext rather than
+    # going through a Recorder.
+    _last_n_available: dict = field(default_factory=dict, repr=False)
 
     # --- push-side wiring — filled in by sim.runner.run_mixed() after
     #     construction; left at these defaults for a kanban-only run that
@@ -164,11 +171,30 @@ class RunContext:
         return info
 
     def record_supermarket(self, line_id: int, product_type: str,
-                            event_type: str, sm: SupermarketResource) -> None:
+                            event_type: str, sm: SupermarketResource,
+                            kanban_card_id: Optional[str] = None) -> None:
         """Append one SupermarketSnapshot reflecting sm's state right now
         (post-event). Called from every mutation site listed on
-        SupermarketSnapshot's docstring — never call this speculatively."""
+        SupermarketSnapshot's docstring — never call this speculatively.
+
+        delta_qty is derived here from the last n_available this
+        RunContext saw for (line_id, product_type) — None only for that
+        pair's very first snapshot ("initial"), since there's nothing
+        yet to diff against. Same derivation telemetry.recorder.Recorder
+        does; kept in sync here since sim/fill/pull/* call sites call
+        rt.record_supermarket() on this RunContext directly rather than
+        through a Recorder. kanban_card_id is optional and passed
+        straight through for callers that have one to give."""
         line_name = self.kenv.lines[line_id - 1].line_name
+
+        key = (line_id, product_type)
+        prev_n_available = self._last_n_available.get(key)
+        if prev_n_available is None:
+            delta_qty = None
+        else:
+            delta_qty = sm.n_available - prev_n_available
+        self._last_n_available[key] = sm.n_available
+
         self.snapshot_log.append(
             SupermarketSnapshot(
                 t=self.kenv.env.now,
@@ -179,6 +205,8 @@ class RunContext:
                 n_available=sm.n_available,
                 pcs_partial=sm.pcs_partial,
                 batch_size=sm.batch_size,
+                delta_qty=delta_qty,
+                kanban_card_id=kanban_card_id,
             )
         )
 

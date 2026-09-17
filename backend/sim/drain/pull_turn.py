@@ -81,6 +81,9 @@ def _run_one_pull_card(
 
     for c in cards:
         c.record_transition("in_production", env.now)
+        if c.current_history is not None:
+            c.current_history.t_chute_end = round(env.now, 3)
+            c.current_history.t_production_start = round(env.now, 3)
 
     sm = kenv.supermarket_for(line_id, product_type)
     recycle_queue: list = list(cards)
@@ -137,7 +140,7 @@ def _run_one_pull_card(
     if ctx.gate_activity_log is not None:
         ctx.gate_activity_log.append(GateActivityEntry(
             t_start=t_start, t_end=t_end, line_id=line_id,
-            sachnummer=order_rec.sachnummer, sim_class="pull",
+            sachnummer=order_rec.sachnummer, production_type="pull",
             crew_id=crew_id,
             possible_changeover=possible_changeover,
             quantity=order_rec.quantity,

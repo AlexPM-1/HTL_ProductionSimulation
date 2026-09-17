@@ -41,7 +41,9 @@ from reports.kpi.by_crew import _build_kpi_by_crew
 from reports.pull.card_flow import build_card_flow_payload
 from reports.pull.shortfall import build_shortfall_payload
 from reports.pull.restmenge import build_restmenge_payload
+from reports.pull.inventory_timeline import build_pull_inventory_timeline_report
 from reports.push.delivery import push_delivery_summary
+from reports.all.order_routing import build_order_routing_report
 from reports.serialization import _to_jsonable
 
 
@@ -122,6 +124,19 @@ def simulate_mixed(req: SimulateMixedRequest):
         for (line_name, product_type), pcs_partial in restmenge.items()
     ]
 
+    # Unfiltered (line_name=None, product_type=None) — the dashboard's
+    # Inventory sub-tab filters the full ledger/KPI set client-side, same
+    # convention as card_flow/line_units_series above.
+    inventory_timeline = build_pull_inventory_timeline_report(kenv, cfg)
+
+    # --- Order routing (line-assignment/cards summary + per-order
+    # timeline) — same (kenv, cfg) -> dict shape as every other report
+    # built above; included directly here for now, same as the rest of
+    # this endpoint (see reports.base.register()'s registry for the
+    # GET /api/reports/order_routing alternative, once/if this endpoint
+    # migrates onto it).
+    order_routing = build_order_routing_report(kenv, cfg)
+
     # --- Gate status — "which class is running now" panel --------------
     def _gate_current_class(sachnummer: Optional[str]) -> Optional[str]:
         if sachnummer is None:
@@ -195,6 +210,8 @@ def simulate_mixed(req: SimulateMixedRequest):
         "card_flow": card_flow,
         "line_units_series": line_units_series,
         "restmenge": restmenge_json,
+        "inventory_timeline": inventory_timeline,
+        "order_routing": order_routing,
         "gate_status": gate_status,
         "push_kpi": push_kpi,
         "push_delivery_log": push_delivery_log_json,
@@ -271,7 +288,7 @@ def mixed_crew_activity(
             "line_id": e.line_id,
             "line_name": id_to_name.get(e.line_id, str(e.line_id)),
             "sachnummer": e.sachnummer,
-            "sim_class": e.sim_class,
+            "production_type": e.production_type,
             "quantity": e.quantity,
             "possible_changeover": e.possible_changeover,
             "t_start": e.t_start / divisor,

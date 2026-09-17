@@ -195,6 +195,7 @@ def run_one_order(
             f"Order {order_rec.sachnummer!r} COMPLETE — "
             f"passed={passed}  scrapped={scrapped}  "
             f"(line cleared, ready for changeover)"
+            f"Note: {order_rec.note}"
         )
 
     return True

@@ -211,6 +211,13 @@ def _make_kanban_order_record(rt: "RunContext", line_name: str, product_type: st
     if line_class is None or not line_class.station_names:
         return None
     return OrderRecord(
+        # Throwaway internal "what to produce" record for this batch —
+        # NOT the customer-facing OrderRecordPull tracked in
+        # kenv.order_registry (see SimEnvironment.create_order()), so it
+        # has no real order_id to assign and nothing ever reads this
+        # field off it. -1 is a sentinel marking "not a registered
+        # order" rather than a valid sequential id.
+        order_id=-1,
         period_label="Kanban",
         sachnummer=product_type,
         kunde=info.kunde,

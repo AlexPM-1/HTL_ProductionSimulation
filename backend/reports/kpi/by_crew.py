@@ -56,8 +56,8 @@ def build_kpi_by_crew(kenv) -> dict:
     for crew_id in range(n_crews):
         entries = [e for e in gate_log if getattr(e, "crew_id", None) == crew_id]
 
-        def _bucket(sim_class: str) -> dict:
-            subset = [e for e in entries if e.sim_class == sim_class]
+        def _bucket(production_type: str) -> dict:
+            subset = [e for e in entries if e.production_type == production_type]
             return {
                 "n_units": len(subset),
                 "total_quantity": sum(e.quantity or 0 for e in subset),

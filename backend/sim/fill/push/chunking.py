@@ -16,9 +16,11 @@ from typing import Optional
 
 from domain.orders import OrderRecord
 from domain.products import ProductLineInfo
+from sim.resources.environment import SimEnvironment
 
 
 def build_push_order_record(
+    kenv: SimEnvironment,
     row,
     info: ProductLineInfo,
     assigned_line: str,
@@ -27,13 +29,19 @@ def build_push_order_record(
 ) -> OrderRecord:
     """
     Resolve one CustomerDemand row + its chosen production line into a
-    full OrderRecord — due_date populated straight from the row's own
-    (Date, Time); delivered_date stays None until run_push_turn()
+    full OrderRecordPush — due_date populated straight from the row's
+    own (Date, Time); delivered_date stays None until run_push_turn()
     (sim/drain/push_turn.py) sets it on the specific chunk that
     actually finishes.
+
+    Created via kenv.create_order(kind="push", ...) (rather than
+    constructing OrderRecord directly) so order_id comes from the one
+    shared push/pull counter and the result is registered in
+    kenv.order_registry — see SimEnvironment.create_order().
     """
     lc = info.lines[assigned_line]
-    return OrderRecord(
+    return kenv.create_order(
+        kind="push",
         period_label=row.period_label,
         sachnummer=row.product_id,
         kunde=info.kunde,
@@ -57,9 +65,13 @@ def split_into_chunks(order: OrderRecord, chunk_size: int) -> list[OrderRecord]:
     """
     Split `order.quantity` into consecutive OrderRecord copies of at
     most `chunk_size` pieces each (`dataclasses.replace(order,
-    quantity=qty)` per chunk). Pure: no chute / chute_tracker / env
-    side effects — the caller (push_dispatch_process) is responsible
-    for actually enqueueing each returned chunk.
+    quantity=qty)` per chunk). Every chunk carries the SAME order_id as
+    `order` (dataclasses.replace() only overrides `quantity` here, so
+    order_id — and every other field, including the shared
+    `assignments` list object — passes through unchanged). Pure: no
+    chute / chute_tracker / env side effects — the caller
+    (push_dispatch_process) is responsible for actually enqueueing each
+    returned chunk.
     """
     chunks: list[OrderRecord] = []
     remaining = order.quantity

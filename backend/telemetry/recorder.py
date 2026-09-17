@@ -46,6 +46,10 @@ class Recorder:
         self.shortfall_log: list[ShortfallEvent] = (
             shortfall_log if shortfall_log is not None else []
         )
+        # (line_id, product_type) -> last n_available seen, used only to
+        # derive SupermarketSnapshot.delta_qty automatically — callers
+        # never compute or pass this themselves.
+        self._last_n_available: "dict[tuple[int, str], int]" = {}
 
     def _line_name(self, line_id: int) -> str:
         return self.kenv.lines[line_id - 1].line_name
@@ -60,11 +64,31 @@ class Recorder:
         self.event_log.append(event)
 
     def record_supermarket(
-        self, line_id: int, product_type: str, event_type: str, sm
+        self,
+        line_id: int,
+        product_type: str,
+        event_type: str,
+        sm,
+        kanban_card_id: "str | None" = None,
     ) -> None:
         """Append one SupermarketSnapshot reflecting sm's state right now
         (post-event). Call only from the actual mutation site — never
-        speculatively."""
+        speculatively.
+
+        delta_qty is derived here from the last n_available this Recorder
+        saw for (line_id, product_type) — None only for that pair's very
+        first snapshot ("initial"), since there's nothing yet to diff
+        against. kanban_card_id is optional and passed straight through
+        for callers that have one to give.
+        """
+        key = (line_id, product_type)
+        prev_n_available = self._last_n_available.get(key)
+        if prev_n_available is None:
+            delta_qty = None
+        else:
+            delta_qty = sm.n_available - prev_n_available
+        self._last_n_available[key] = sm.n_available
+
         self.snapshot_log.append(
             SupermarketSnapshot(
                 t=self.kenv.env.now,
@@ -75,6 +99,8 @@ class Recorder:
                 n_available=sm.n_available,
                 pcs_partial=sm.pcs_partial,
                 batch_size=sm.batch_size,
+                delta_qty=delta_qty,
+                kanban_card_id=kanban_card_id,
             )
         )
 

@@ -71,6 +71,22 @@ def run_push_turn(
             or getattr(gate.current_rec, "sachnummer", None) != chunk.sachnummer
         )
 
+        chunk.t_production_start = t_start
+        # `chunk` is a dataclasses.replace() copy made by
+        # sim.fill.push.chunking.split_into_chunks() — a distinct object
+        # from the OrderRecordPush kenv.order_registry[chunk.order_id]
+        # actually holds (only `assignments`, a shared mutable list, is
+        # kept in sync across copies automatically). Reports read the
+        # registry entry, so mirror this chunk's timing onto it too —
+        # min(start)/max(end) across every chunk so a split order still
+        # reports one sensible overall production window.
+        _reg_order = kenv.order_registry.get(chunk.order_id)
+        if _reg_order is not None:
+            _reg_order.t_production_start = (
+                t_start if _reg_order.t_production_start is None
+                else min(_reg_order.t_production_start, t_start)
+            )
+
         _log = kenv.event_log if event_log is None else event_log
         _start_idx = len(_log)
         ran = yield from run_one_order(
@@ -86,17 +102,28 @@ def run_push_turn(
         if ran:
             gate.current_rec = chunk
         t_end = env.now
+        chunk.t_production_end = t_end
+        if _reg_order is not None:
+            _reg_order.t_production_end = (
+                t_end if _reg_order.t_production_end is None
+                else max(_reg_order.t_production_end, t_end)
+            )
         gate.touch(t_end)
         if ctx.gate_activity_log is not None:
             ctx.gate_activity_log.append(GateActivityEntry(
                 t_start=t_start, t_end=t_end, line_id=line_id,
-                sachnummer=chunk.sachnummer, sim_class="push",
+                sachnummer=chunk.sachnummer, production_type="push",
                 crew_id=crew_id,
                 possible_changeover=possible_changeover,
                 quantity=chunk.quantity,
             ))
 
         chunk.delivered_date = ctx.epoch + _dt.timedelta(seconds=env.now)
+        if _reg_order is not None:
+            _reg_order.delivered_date = (
+                chunk.delivered_date if _reg_order.delivered_date is None
+                else max(_reg_order.delivered_date, chunk.delivered_date)
+            )
         if ctx.delivery_log is not None:
             ctx.delivery_log.append(PushDeliveryRecord(
                 sachnummer=chunk.sachnummer,

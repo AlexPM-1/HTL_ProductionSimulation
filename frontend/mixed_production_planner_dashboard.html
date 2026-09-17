@@ -209,6 +209,17 @@
   .gate-card .row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:var(--text-muted);}
   .gate-card .row span:last-child{font-weight:600;color:var(--text);}
 
+  /* ---------- Order routing (All Production tab) ---------- */
+  .order-detail{border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:10px;background:#FCFCFD;overflow:hidden;}
+  .order-detail summary{cursor:pointer;list-style:none;padding:11px 14px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-weight:700;font-size:13px;}
+  .order-detail summary::-webkit-details-marker{display:none;}
+  .order-detail summary::before{content:'▸';display:inline-block;width:10px;color:var(--text-faint);transition:transform .15s;flex-shrink:0;}
+  .order-detail[open] summary::before{transform:rotate(90deg);}
+  .order-detail-sub{font-weight:500;font-size:12px;color:var(--text-muted);}
+  .order-detail-body{padding:2px 14px 14px;border-top:1px dashed var(--border);}
+  .order-detail-body h4{margin:14px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-faint);}
+  .order-detail-body .kpi-line-card{background:#fff;margin-top:10px;}
+
   /* ---------------- Supermarket state (All Production tab) ---------------- */
   .sm-line-block{margin-bottom:26px;}
   .sm-line-block h3{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:8px;}
@@ -443,9 +454,14 @@
         <h1 id="mainTitle">Mixed Production Throughput</h1>
         <p id="mainSubtitle">Run a simulation from the sidebar to see the schedule.</p>
       </div>
-      <a id="movementLink" href="#" class="btn btn-ghost" style="width:auto;padding:9px 16px;opacity:.5;pointer-events:none;" target="_blank" rel="noopener" onclick="return openMovementSimulation(event)">
-        &#8618; Open Movement Simulation
-      </a>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button id="printReportBtn" class="btn btn-ghost" style="width:auto;padding:9px 16px;opacity:.5;pointer-events:none;" onclick="openPrintReport()">
+          &#128438; Print Report
+        </button>
+        <a id="movementLink" href="#" class="btn btn-ghost" style="width:auto;padding:9px 16px;opacity:.5;pointer-events:none;" target="_blank" rel="noopener" onclick="return openMovementSimulation(event)">
+          &#8618; Open Movement Simulation
+        </a>
+      </div>
     </div>
 
     <div class="tabs">
@@ -463,6 +479,7 @@
         <button class="subtab" data-sub="all-kpi" onclick="switchSubTab('all','kpi')">KPIs</button>
         <button class="subtab" data-sub="all-gate" onclick="switchSubTab('all','gate')">Gate Status</button>
         <button class="subtab" data-sub="all-supermarket" onclick="switchSubTab('all','supermarket')">Supermarkets</button>
+        <button class="subtab" data-sub="all-routing" onclick="switchSubTab('all','routing')">Order Routing</button>
       </div>
 
       <div class="sub-panel" id="sub-all-gantt">
@@ -504,6 +521,21 @@
           <div id="supermarketStateContainer"><div class="empty-state"><div class="icon">🗄️</div><h3>No data yet</h3><p>Run a simulation to see current Supermarket occupancy, row by row.</p></div></div>
         </div>
       </div>
+
+      <div class="sub-panel" id="sub-all-routing" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Order routing / line assignment</h2><p>From <code>order_routing.summary</code> — one row per order+line pairing, straight off every tracked order's fulfilment so far.</p></div>
+          </div>
+          <div id="orderRoutingSummaryContainer"><div class="empty-state"><div class="icon">🧾</div><h3>No data yet</h3><p>Run a simulation to see which line (and, for Kanban orders, which cards) fulfilled each order.</p></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Per-order timeline</h2><p>From <code>order_routing.timeline</code> — due/withdrawal/delivery dates and, for pull orders, every card's production interval, chronologically. Click an order to expand it.</p></div>
+          </div>
+          <div id="orderRoutingTimelineContainer"><div class="empty-state"><div class="icon">🧾</div><h3>No data yet</h3></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ============ KANBAN (PULL) ============ -->
@@ -514,6 +546,7 @@
         <button class="subtab" data-sub="pull-cardflow" onclick="switchSubTab('pull','cardflow')">Card Flow</button>
         <button class="subtab" data-sub="pull-shortfall" onclick="switchSubTab('pull','shortfall')">Shortfall</button>
         <button class="subtab" data-sub="pull-supermarket" onclick="switchSubTab('pull','supermarket')">Supermarkets</button>
+        <button class="subtab" data-sub="pull-inventory" onclick="switchSubTab('pull','inventory')">Inventory</button>
       </div>
 
       <div class="sub-panel" id="sub-pull-gantt">
@@ -578,11 +611,28 @@
             <label style="font-size:11.5px;font-weight:600;color:var(--text-muted);">Supermarket (line):</label>
             <select id="luSelect" onchange="renderLineUnitsCharts()"></select>
           </div>
-          <h3 style="margin:18px 0 6px;font-size:13.5px;">Packages (n_available) vs time</h3>
+          <h3 id="luPkgHeading" style="margin:18px 0 6px;font-size:13.5px;">Packages (n_available) vs time</h3>
           <div id="lineUnitsPackagesContainer"><div class="empty-state"><div class="icon">📦</div><h3>No data yet</h3></div></div>
-          <h3 style="margin:24px 0 6px;font-size:13.5px;">Restmenge (pcs, partial pack) vs time</h3>
+          <h3 id="luRmHeading" style="margin:24px 0 6px;font-size:13.5px;">Restmenge (pcs, partial pack) vs time</h3>
           <div id="lineUnitsRestmengeContainer"><div class="empty-state"><div class="icon">🔢</div><h3>No data yet</h3></div></div>
           <div id="restmengeStrip"></div>
+        </div>
+      </div>
+
+      <div class="sub-panel" id="sub-pull-inventory" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Supermarket inventory timeline</h2><p>From <code>inventory_timeline</code> — every stock-moving event (withdrawal / deposit_batch / initial) per supermarket &amp; product, plus the KPI summary below.</p></div>
+          </div>
+          <div class="sm-controls">
+            <label style="font-size:11.5px;font-weight:600;color:var(--text-muted);">Line:</label>
+            <select id="invLineSelect" onchange="setInvLine(this.value)"></select>
+            <label style="font-size:11.5px;font-weight:600;color:var(--text-muted);margin-left:10px;">Product:</label>
+            <select id="invProductSelect" onchange="setInvProduct(this.value)"></select>
+          </div>
+          <div id="inventoryKpiContainer"><div class="empty-state"><div class="icon">📊</div><h3>No data yet</h3></div></div>
+          <h3 id="inventoryLedgerHeading" style="margin:20px 0 6px;font-size:13.5px;">Event ledger</h3>
+          <div id="inventoryTimelineContainer"><div class="empty-state"><div class="icon">🧾</div><h3>No data yet</h3><p>Run a simulation to see every withdrawal/deposit event against each supermarket's running quantity.</p></div></div>
         </div>
       </div>
     </div>
@@ -1033,6 +1083,292 @@ function openMovementSimulation(event){
 }
 
 /* =========================================================================
+   Print report hand-off
+   ------------------------------------------------------------------------
+   Opens a standalone, print-ready snapshot of every panel across all
+   three top tabs (All Production / Pull / Push) as an ADDITIONAL page
+   (a new browser tab via window.open), never printing this dashboard
+   page in place. That keeps the sidebar / config / interactive controls
+   out of the printout, and lets the person print-to-PDF the snapshot to
+   keep alongside other runs for comparison.
+
+   Nothing is re-fetched or re-rendered here: every chart (all SVG/HTML,
+   no <canvas>) is already sitting in the live DOM for BOTH the active
+   tab and the two hidden ones (they're toggled with display:none, not
+   removed -- see switchTopTab/switchSubTab), so we just clone those
+   nodes, force every sub-panel visible, and drop the tab/pill/select
+   controls that only make sense as live UI.
+   ========================================================================= */
+function freezePrintSelects(root){
+  // <select> current selection lives in the .value IDL property, which
+  // cloneNode(true) does NOT carry over (unlike class/style attributes) --
+  // a cloned <select> silently resets to its first <option>. Swap each
+  // one for a static label showing what was actually selected, so e.g.
+  // the Card Flow / Shortfall / Supermarket "line" pickers still report
+  // the line the person had chosen rather than always "Total".
+  root.querySelectorAll('select').forEach(sel => {
+    const opt = sel.options[sel.selectedIndex];
+    const label = document.createElement('span');
+    label.className = 'frozen-select';
+    label.textContent = opt ? opt.textContent : '(none selected)';
+    sel.replaceWith(label);
+  });
+}
+function freezePrintInteractive(root){
+  // Tab/pill buttons keep their current .active styling (a plain class,
+  // which DOES survive cloning) so which day/crew/line slice is showing
+  // stays visible -- we just strip the onclick handlers, since they'd
+  // reference functions that don't exist in the report's own window.
+  root.querySelectorAll('[onclick]').forEach(el => el.removeAttribute('onclick'));
+}
+/* -------------------------------------------------------------------------
+   "Every line" capture for the four panels that normally show ONE line
+   at a time (a <select> or a pill-nav picks which). Each helper below
+   drives the SAME live render function through every one of its line
+   options, snapshotting the freshly-rendered DOM after each call, then
+   restores the original selection so the live dashboard is left exactly
+   as the person had it. This only works because every render call here
+   is synchronous and reads cached data (lastCardFlowData / lastResult /
+   lastSupermarketStateData) rather than hitting the network, so the
+   whole loop finishes within one JS turn and the browser never paints
+   the intermediate states.
+   ------------------------------------------------------------------- */
+function captureCardFlowAllLines(){
+  const cardFlow = lastCardFlowData;
+  const sel = document.getElementById('cfLineSelect');
+  if(!cardFlow || !sel) return '';
+  const options = [{value:'total', label:'Total (all lines)'},
+    ...(cardFlow.lines||[]).map(l => ({value:String(l.line_id), label:l.line_name}))];
+  const prevValue = sel.value;
+  const blocks = options.map(opt => {
+    sel.value = opt.value;
+    renderCardFlowChart(cardFlow);
+    const legendHtml = (document.getElementById('cfLegend')||{}).innerHTML || '';
+    const caption = (document.getElementById('cardFlowSubline')||{}).textContent || '';
+    const bodyHtml = (document.getElementById('cardFlowContainer')||{}).outerHTML || '';
+    return `<div class="report-line-block">
+      <h4 class="report-line-heading">${escapeHtml(opt.label)}</h4>
+      ${caption ? `<p class="report-line-caption">${escapeHtml(caption)}</p>` : ''}
+      ${legendHtml ? `<div class="legend">${legendHtml}</div>` : ''}
+      ${bodyHtml}
+    </div>`;
+  });
+  sel.value = prevValue;
+  renderCardFlowChart(cardFlow);
+  return blocks.join('');
+}
+function captureShortfallAllLines(){
+  const cardFlow = lastCardFlowData;
+  const sel = document.getElementById('sfLineSelect');
+  if(!cardFlow || !sel) return '';
+  const options = [{value:'total', label:'Total (all lines)'},
+    ...(cardFlow.lines||[]).map(l => ({value:String(l.line_id), label:l.line_name}))];
+  const prevValue = sel.value;
+  const blocks = options.map(opt => {
+    sel.value = opt.value;
+    renderShortfallChart(cardFlow);
+    const legendHtml = (document.getElementById('sfLegend')||{}).innerHTML || '';
+    const caption = (document.getElementById('shortfallSubline')||{}).textContent || '';
+    const bodyHtml = (document.getElementById('shortfallContainer')||{}).outerHTML || '';
+    return `<div class="report-line-block">
+      <h4 class="report-line-heading">${escapeHtml(opt.label)}</h4>
+      ${caption ? `<p class="report-line-caption">${escapeHtml(caption)}</p>` : ''}
+      ${legendHtml ? `<div class="legend">${legendHtml}</div>` : ''}
+      ${bodyHtml}
+    </div>`;
+  });
+  sel.value = prevValue;
+  renderShortfallChart(cardFlow);
+  return blocks.join('');
+}
+function captureLineUnitsAllLines(){
+  const data = lastResult && lastResult.line_units_series;
+  const sel = document.getElementById('luSelect');
+  if(!data || !data.lines || !data.lines.length || !sel) return '';
+  const options = [{value:'total', label:'Total (all lines)'},
+    ...data.lines.map((l,i) => ({value:String(i), label:l.line}))];
+  const prevValue = sel.value;
+  const blocks = options.map(opt => {
+    sel.value = opt.value;
+    renderLineUnitsCharts();
+    const legendHtml = (document.getElementById('luLegend')||{}).innerHTML || '';
+    const pkgHtml = (document.getElementById('lineUnitsPackagesContainer')||{}).outerHTML || '';
+    const rmHtml = (document.getElementById('lineUnitsRestmengeContainer')||{}).outerHTML || '';
+    return `<div class="report-line-block">
+      <h4 class="report-line-heading">${escapeHtml(opt.label)}</h4>
+      ${legendHtml ? `<div class="legend">${legendHtml}</div>` : ''}
+      <h5 class="report-subheading">Packages (n_available) vs time</h5>
+      ${pkgHtml}
+      <h5 class="report-subheading">Restmenge (pcs, partial pack) vs time</h5>
+      ${rmHtml}
+    </div>`;
+  });
+  sel.value = prevValue;
+  renderLineUnitsCharts();
+  return blocks.join('');
+}
+function captureSupermarketAllLines(){
+  const data = lastSupermarketStateData;
+  if(!data || !data.lines || !data.lines.length) return '';
+  const prevLine = allSmSelectedLine;
+  const blocks = data.lines.map(l => {
+    allSmSelectedLine = l.line_name;
+    renderAllSupermarketPanel();
+    const legendHtml = (document.getElementById('allSmLegend')||{}).innerHTML || '';
+    const bodyHtml = (document.getElementById('supermarketStateContainer')||{}).outerHTML || '';
+    return `<div class="report-line-block">
+      <h4 class="report-line-heading">${escapeHtml(l.line_name)}</h4>
+      ${legendHtml ? `<div class="legend">${legendHtml}</div>` : ''}
+      ${bodyHtml}
+    </div>`;
+  });
+  allSmSelectedLine = prevLine;
+  renderAllSupermarketPanel();
+  return blocks.join('');
+}
+// Swaps a single-selection container in the CLONE for the pre-captured
+// "every line" HTML, and strips the now-redundant single-line controls
+// around it (legend/select/pill-nav/heading elements, all identified by
+// id since the clone is a detached fragment -- querySelector('#id')
+// still works there even though getElementById would not).
+function replacePrintAllLinesBlock(clone, containerId, allLinesHtml, idsToRemove){
+  if(!allLinesHtml) return;
+  const container = clone.querySelector('#' + containerId);
+  if(!container) return;
+  container.outerHTML = `<div class="report-all-lines">${allLinesHtml}</div>`;
+  (idsToRemove||[]).forEach(id => {
+    const el = clone.querySelector('#' + id);
+    if(el) el.remove();
+  });
+}
+function buildPrintReportSections(){
+  const cardFlowAllLines = captureCardFlowAllLines();
+  const shortfallAllLines = captureShortfallAllLines();
+  const lineUnitsAllLines = captureLineUnitsAllLines();
+  const supermarketAllLines = captureSupermarketAllLines();
+  const inventoryAllLines = captureInventoryTimelineAllLines();
+
+  const sections = [
+    {id:'top-all',  title:'All Production'},
+    {id:'top-pull', title:'Kanban (Pull)'},
+    {id:'top-push', title:'Push'},
+  ];
+  return sections.map(s => {
+    const src = document.getElementById(s.id);
+    const clone = src.cloneNode(true);
+    clone.removeAttribute('style'); // drop the display:none used for inactive top tabs
+    clone.querySelectorAll('.sub-panel').forEach(sp => sp.style.display = '');
+    clone.querySelectorAll('.subtabs').forEach(nav => nav.remove()); // each panel-head already labels its own chart
+    freezePrintSelects(clone);
+    freezePrintInteractive(clone);
+    // <details> (order-routing per-order cards) default to collapsed live;
+    // the printed report should show every order expanded regardless of
+    // what was open when Print Report was clicked.
+    clone.querySelectorAll('details').forEach(d => d.setAttribute('open', ''));
+
+    // Swap the five "one line at a time" panels for the pre-captured
+    // "every line" versions built above.
+    replacePrintAllLinesBlock(clone, 'cardFlowContainer', cardFlowAllLines, ['cfLegend']);
+    replacePrintAllLinesBlock(clone, 'shortfallContainer', shortfallAllLines, ['sfLegend']);
+    replacePrintAllLinesBlock(clone, 'lineUnitsPackagesContainer', lineUnitsAllLines,
+      ['luLegend', 'lineUnitsRestmengeContainer', 'luPkgHeading', 'luRmHeading']);
+    replacePrintAllLinesBlock(clone, 'supermarketStateContainer', supermarketAllLines,
+      ['allSmLegend', 'smLineTabs']);
+    replacePrintAllLinesBlock(clone, 'inventoryKpiContainer', inventoryAllLines,
+      ['inventoryTimelineContainer', 'inventoryLedgerHeading']);
+    // The "Line: <picker>" controls (now frozen into static labels by
+    // freezePrintSelects) only made sense next to a single selected
+    // line's chart -- drop them wherever the panel now shows every line.
+    if(cardFlowAllLines || shortfallAllLines || lineUnitsAllLines || inventoryAllLines){
+      clone.querySelectorAll('.sm-controls').forEach(el => el.remove());
+    }
+
+    return `<section class="report-section"><h1 class="report-section-title">${escapeHtml(s.title)}</h1>${clone.innerHTML}</section>`;
+  }).join('');
+}
+function buildPrintReportCover(){
+  const summary = (lastResult && lastResult.summary) || {};
+  const stripClone = document.getElementById('statStrip').cloneNode(true);
+  const rows = [
+    ['Workers', summary.n_workers != null ? summary.n_workers + 'MA' : '—'],
+    ['Seed', summary.seed ?? '—'],
+    ['Day start hour', summary.day_start_hour != null ? summary.day_start_hour + ':00' : '—'],
+    ['Push chunk size', summary.push_chunk_size ?? '—'],
+    ['Horizon', summary.horizon_h != null ? summary.horizon_h.toFixed(2) + ' h' : '—'],
+    ['Sim end', summary.sim_end_h != null ? summary.sim_end_h.toFixed(2) + ' h' : '—'],
+    ['Cards tracked', summary.cards_tracked ?? '—'],
+    ['Pull / Push SKUs', (summary.n_kanban_products ?? '—') + ' / ' + (summary.n_push_products ?? '—')],
+  ];
+  return `
+    <section class="report-cover">
+      <h1 class="report-main-title">Mixed Production Report</h1>
+      <p class="report-meta">Generated ${escapeHtml(new Date().toLocaleString())}</p>
+      ${stripClone.outerHTML}
+      <div class="report-run-table">
+        ${rows.map(([k,v]) => `<div class="run-summary-row"><span>${escapeHtml(String(k))}</span><span>${escapeHtml(String(v))}</span></div>`).join('')}
+      </div>
+    </section>`;
+}
+function openPrintReport(){
+  if(!lastResult){
+    showError('Run a simulation first, then print the report.');
+    return;
+  }
+  const win = window.open('', '_blank');
+  if(!win){
+    showError('Pop-up blocked — allow pop-ups for this page, then click Print Report again.');
+    return;
+  }
+  const baseStyle = document.querySelector('style') ? document.querySelector('style').innerHTML : '';
+  const printOnlyStyle = `
+    body{ background:#fff; padding:26px 32px 60px; max-width:1400px; margin:0 auto; }
+    .subtab, .daytab, .tab, .frozen-select{ cursor:default; }
+    .subtab, .daytab, .tab{ pointer-events:none; }
+    .report-toolbar{ position:sticky; top:0; background:#fff; padding:12px 0 16px; margin-bottom:22px; display:flex; gap:10px; border-bottom:1px solid var(--border); z-index:10; }
+    .report-toolbar button{ padding:9px 18px; border-radius:8px; border:1px solid var(--border); background:#fff; font-weight:600; font-size:13px; cursor:pointer; font-family:inherit; }
+    .report-toolbar button.primary{ background:var(--blue); color:#fff; border-color:var(--blue); }
+    .report-toolbar button.primary:hover{ background:var(--blue-dark); }
+    .report-toolbar .hint{ align-self:center; color:var(--text-faint); font-size:12px; }
+    .report-main-title{ font-size:24px; margin:0 0 2px; }
+    .report-meta{ margin:0 0 16px; color:var(--text-muted); font-size:13px; }
+    .report-run-table{ max-width:520px; margin-top:16px; border:1px solid var(--border); border-radius:var(--radius-sm); padding:4px 14px; background:#fff; }
+    .report-section-title{ font-size:20px; margin:0 0 16px; padding-bottom:10px; border-bottom:2px solid var(--border); }
+    .report-section{ margin-bottom:8px; }
+    .report-cover{ margin-bottom:30px; }
+    .frozen-select{ display:inline-block; padding:6px 10px; border:1px solid var(--border); border-radius:8px; font-size:12.5px; font-weight:600; background:#F8F9FB; color:var(--text); }
+    .report-all-lines{ display:flex; flex-direction:column; gap:22px; }
+    .report-line-block{ border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; background:#FDFDFE; page-break-inside:avoid; }
+    .report-line-heading{ margin:0 0 4px; font-size:14.5px; }
+    .report-line-caption{ margin:0 0 10px; font-size:12px; color:var(--text-muted); }
+    .report-subheading{ margin:16px 0 6px; font-size:13px; color:var(--text-muted); }
+    @media print{
+      @page{ size:A4 landscape; margin:12mm; }
+      .report-toolbar{ display:none !important; }
+      .report-section{ page-break-before:always; }
+      .report-cover, .report-section:first-of-type{ page-break-before:avoid; }
+      .panel{ page-break-inside:avoid; }
+    }
+  `;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
+<title>Mixed Production Report — ${escapeHtml(new Date().toLocaleString())}</title>
+<style>${baseStyle}</style>
+<style>${printOnlyStyle}</style>
+</head><body>
+<div class="report-toolbar">
+  <button class="primary" onclick="window.print()">&#128438; Print / Save as PDF</button>
+  <button onclick="window.close()">Close</button>
+  <span class="hint">Tip: choose "Save as PDF" in the print dialog to keep this run for comparison.</span>
+</div>
+${buildPrintReportCover()}
+${buildPrintReportSections()}
+</body></html>`;
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+}
+
+/* =========================================================================
    API calls
    ========================================================================= */
 async function checkHealth(){
@@ -1194,6 +1530,10 @@ function onSimulateComplete(data){
   movementLink.style.opacity = '1';
   movementLink.style.pointerEvents = 'auto';
 
+  const printReportBtn = document.getElementById('printReportBtn');
+  printReportBtn.style.opacity = '1';
+  printReportBtn.style.pointerEvents = 'auto';
+
   renderStatStrip(data.summary);
   renderRunSummary(data.summary);
 
@@ -1208,6 +1548,7 @@ function onSimulateComplete(data){
   renderAllKpiPanel();
   renderGateStatus(data.gate_status);
   loadSupermarketState();
+  loadOrderRouting(data.order_routing);
 
   // Kanban (Pull)
   renderPullGanttPanel();
@@ -1217,6 +1558,7 @@ function onSimulateComplete(data){
   renderLineUnitsSelect(data.line_units_series);
   renderLineUnitsCharts();
   renderRestmengeStrip(data.restmenge);
+  loadInventoryTimeline(data.inventory_timeline);
 
   // Push
   renderPushGanttPanel();
@@ -1596,6 +1938,146 @@ function renderGateStatus(gateStatus){
       <div class="row"><span>Last activity</span><span>${g.last_activity_h!=null? g.last_activity_h.toFixed(2)+' h':'—'}</span></div>
     </div>`;
   }).join('') + `</div>`;
+}
+
+/* =========================================================================
+   Order routing / line assignment (All Production tab) — data.order_routing
+   off the POST /api/simulate_mixed response: {"summary":[...],"timeline":[...]}
+   — see reports.all.order_routing. Cached client-side like card_flow /
+   inventory_timeline (fetched once per run, no separate endpoint call).
+   ========================================================================= */
+let lastOrderRoutingData = null; // {summary:[...], timeline:[...]}
+
+function loadOrderRouting(orderRouting){
+  lastOrderRoutingData = orderRouting || null;
+  renderOrderRoutingPanel();
+}
+
+// HH:MM:SS local time — used for the per-card production start/end stamps,
+// where only the time-of-day (not the full date) matters since a card's
+// whole production entry is already scoped under its order's due date.
+function formatIsoTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return escapeHtml(String(iso));
+  const hh = String(d.getHours()).padStart(2,'0');
+  const mm = String(d.getMinutes()).padStart(2,'0');
+  const ss = String(d.getSeconds()).padStart(2,'0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function renderOrderRoutingSummaryTable(rows){
+  const container = document.getElementById('orderRoutingSummaryContainer');
+  if(!rows || !rows.length){
+    container.innerHTML = '<div class="empty-state"><div class="icon">🧾</div><h3>No orders yet</h3><p>Run a simulation to populate the routing table.</p></div>';
+    return;
+  }
+  const rowsHtml = rows.map(r => {
+    const badge = r.production_type === 'pull' ? '<span class="class-badge pull">pull</span>'
+      : r.production_type === 'push' ? '<span class="class-badge push">push</span>'
+      : escapeHtml(r.production_type || '—');
+    const cards = (r.cards && r.cards.length) ? r.cards.join(', ') : '—';
+    return `<tr>
+      <td>${r.order_id}</td>
+      <td>${formatIsoDateTime(r.due_date)}</td>
+      <td>${badge}</td>
+      <td>${escapeHtml(r.sachnummer || '—')}</td>
+      <td>${escapeHtml(r.line || '—')}</td>
+      <td>${escapeHtml(cards)}</td>
+    </tr>`;
+  }).join('');
+  container.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Order</th><th>Due</th><th>Type</th><th>Product</th><th>Line Assigned</th><th>Cards</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>`;
+}
+
+// "HTL3: 1, 2, 3, 4  ·  HTL5: 15, 16, 17" — one segment per line the order
+// actually drew cards from (order.cards_by_line off build_order_routing_timeline).
+function formatCardsByLine(cardsByLine){
+  const entries = Object.entries(cardsByLine || {});
+  if(!entries.length) return '—';
+  return entries
+    .map(([line, ids]) => `${escapeHtml(line)}: ${ids.map(String).map(escapeHtml).join(', ')}`)
+    .join(' &nbsp;·&nbsp; ');
+}
+
+function renderOrderRoutingProductionTable(production){
+  if(!production || !production.length){
+    return '<p style="font-size:12px;color:var(--text-faint);margin:6px 0 0;">No production recorded yet.</p>';
+  }
+  const rows = production.map(p => `<tr>
+      <td>${escapeHtml(p.line || '—')}</td>
+      <td>${p.card_id != null ? escapeHtml(String(p.card_id)) : '—'}</td>
+      <td>${formatIsoTime(p.start)}</td>
+      <td>${formatIsoTime(p.end)}</td>
+    </tr>`).join('');
+  return `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Line</th><th>Card</th><th>Start</th><th>End</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function renderOrderRoutingTimeline(timeline){
+  const container = document.getElementById('orderRoutingTimelineContainer');
+  if(!timeline || !timeline.length){
+    container.innerHTML = '<div class="empty-state"><div class="icon">🧾</div><h3>No order timeline yet</h3></div>';
+    return;
+  }
+  container.innerHTML = timeline.map(o => {
+    const isPull = o.production_type === 'pull';
+    const badge = isPull ? '<span class="class-badge pull">pull</span>' : '<span class="class-badge push">push</span>';
+
+    let deltaHtml = '<span class="delta-chip na">—</span>';
+    if(o.delivery_delta_h != null){
+      const cls = o.delivery_delta_h > 0 ? 'late' : 'early';
+      const label = (o.delivery_delta_h > 0 ? '+' : '') + o.delivery_delta_h.toFixed(1) + 'h';
+      deltaHtml = `<span class="delta-chip ${cls}">${label}</span>`;
+    }
+
+    // Pull: a withdrawal WINDOW spanning every card ever drawn for this
+    // order (withdrawal_start/end). Push: a single instant — the moment
+    // the customer actually withdrew the chunk (customer_withdrawal_date),
+    // distinct from delivered_date (production finishing) below.
+    const withdrawn = isPull
+      ? ((o.withdrawal_start || o.withdrawal_end)
+          ? `from ${formatIsoDateTime(o.withdrawal_start)} until ${formatIsoDateTime(o.withdrawal_end)}`
+          : '—')
+      : formatIsoDateTime(o.customer_withdrawal_date);
+
+    return `<details class="order-detail">
+        <summary>
+          <span>Order ${o.order_id}${badge}</span>
+          <span class="order-detail-sub">${escapeHtml(o.sachnummer || '—')} · qty ${o.quantity ?? '—'} · due ${formatIsoDateTime(o.due_date)}</span>
+        </summary>
+        <div class="order-detail-body">
+          <div class="kpi-line-card">
+            <div class="row"><span>Type</span><span>${escapeHtml(o.production_type || '—')}</span></div>
+            <div class="row"><span>Product</span><span>${escapeHtml(o.sachnummer || '—')}</span></div>
+            <div class="row"><span>Quantity</span><span>${o.quantity ?? '—'}</span></div>
+            <div class="row"><span>Due</span><span>${formatIsoDateTime(o.due_date)}</span></div>
+            <div class="row"><span>Withdrawn</span><span>${withdrawn}</span></div>
+            <div class="row"><span>Delivered</span><span>${formatIsoDateTime(o.delivered_date)}</span></div>
+            <div class="row"><span>Late by</span><span>${deltaHtml}</span></div>
+            <div class="row"><span>Lines assigned</span><span>${(o.lines_assigned && o.lines_assigned.length) ? escapeHtml(o.lines_assigned.join(', ')) : '—'}</span></div>
+            <div class="row"><span>Cards assigned</span><span>${formatCardsByLine(o.cards_by_line)}</span></div>
+          </div>
+          <h4>Production</h4>
+          ${renderOrderRoutingProductionTable(o.production)}
+        </div>
+      </details>`;
+  }).join('');
+}
+
+function renderOrderRoutingPanel(){
+  const data = lastOrderRoutingData;
+  if(!data){
+    renderOrderRoutingSummaryTable([]);
+    renderOrderRoutingTimeline([]);
+    return;
+  }
+  renderOrderRoutingSummaryTable(data.summary || []);
+  renderOrderRoutingTimeline(data.timeline || []);
 }
 
 /* =========================================================================
@@ -2467,6 +2949,153 @@ function renderRestmengeStrip(restmenge){
       <div class="rm-product">${escapeHtml(r.product)}</div>
       <div class="rm-val">${r.pcs_partial} pcs</div>
     </div>`).join('');
+}
+
+/* =========================================================================
+   Inventory timeline (Pull tab) — data.inventory_timeline off the
+   POST /api/simulate_mixed response, same convention as lastCardFlowData /
+   line_units_series / restmenge: fetched once per run as part of the one
+   composite payload, then cached so the Line/Product dropdowns just
+   re-filter it client-side rather than hitting the API again on every
+   change.
+   ========================================================================= */
+let lastInventoryTimelineData = null; // { timeline: [...], kpis: [...] }
+let invSelectedLine = null;           // currently selected line_name
+let invSelectedProduct = 'all';       // 'all' or a specific product_type
+
+function loadInventoryTimeline(inventoryTimeline){
+  lastInventoryTimelineData = inventoryTimeline || null;
+  invSelectedLine = null; // reset so renderInventoryLineSelect re-picks the first line for a fresh run
+  invSelectedProduct = 'all';
+  renderInventoryTimelinePanel();
+}
+
+function setInvLine(name){
+  invSelectedLine = name;
+  invSelectedProduct = 'all'; // product list is scoped to the line, so reset it on a line change
+  renderInventoryTimelinePanel();
+}
+function setInvProduct(product){
+  invSelectedProduct = product;
+  renderInventoryTimelinePanel();
+}
+
+function renderInventoryLineSelect(kpis){
+  const sel = document.getElementById('invLineSelect');
+  const lineNames = [...new Set(kpis.map(k => k.line_name))].sort();
+  if(!lineNames.length){ sel.innerHTML = '<option value="">No lines</option>'; return; }
+  if(!invSelectedLine || !lineNames.includes(invSelectedLine)) invSelectedLine = lineNames[0];
+  sel.innerHTML = lineNames.map(n => `<option value="${escapeHtml(n)}" ${n===invSelectedLine?'selected':''}>${escapeHtml(n)}</option>`).join('');
+}
+
+function renderInventoryProductSelect(kpis){
+  const sel = document.getElementById('invProductSelect');
+  const products = [...new Set(kpis.filter(k => k.line_name === invSelectedLine).map(k => k.product))].sort();
+  const options = ['<option value="all">All products</option>']
+    .concat(products.map(p => `<option value="${escapeHtml(p)}" ${p===invSelectedProduct?'selected':''}>${escapeHtml(p)}</option>`));
+  sel.innerHTML = options.join('');
+  if(invSelectedProduct !== 'all' && !products.includes(invSelectedProduct)) { invSelectedProduct = 'all'; sel.value = 'all'; }
+}
+
+function renderInventoryKpiStrip(kpis){
+  const container = document.getElementById('inventoryKpiContainer');
+  const rows = kpis.filter(k => k.line_name === invSelectedLine &&
+    (invSelectedProduct === 'all' || k.product === invSelectedProduct));
+  if(!rows.length){ container.innerHTML = '<div class="empty-state"><p>No KPI data for this selection.</p></div>'; return; }
+  container.innerHTML = `<div class="kpi-grid">` + rows.map(k => `
+    <div class="kpi-line-card">
+      <h3>${escapeHtml(k.product)}</h3>
+      <div class="row"><span>Avg inventory</span><span>${k.avg_inventory}</span></div>
+      <div class="row"><span>Min inventory</span><span>${k.min_inventory}</span></div>
+      <div class="row"><span>Max inventory</span><span>${k.max_inventory}</span></div>
+      <div class="row"><span>Time without stock</span><span>${(k.time_without_stock_s/3600).toFixed(2)}h</span></div>
+      <div class="row"><span>Stockouts</span><span>${k.stockouts}</span></div>
+      <div class="row"><span>Qty withdrawn</span><span>${k.qty_withdrawn}</span></div>
+      <div class="row"><span>Qty replenished</span><span>${k.qty_replenished}</span></div>
+    </div>`).join('') + `</div>`;
+}
+
+function renderInventoryEventTable(timeline){
+  const container = document.getElementById('inventoryTimelineContainer');
+  // One entry per line now (reports.pull.inventory_timeline merges
+  // every product a supermarket carries into a single chronological
+  // row list), so there's exactly one group to find, not one per
+  // product.
+  const group = timeline.find(g => g.line_name === invSelectedLine);
+  const rows = group ? (invSelectedProduct === 'all' ? group.rows :
+    group.rows.filter(r => r.product === invSelectedProduct)) : [];
+  if(!rows.length){
+    container.innerHTML = '<div class="empty-state"><p>No events for this selection.</p></div>';
+    return;
+  }
+  const rowsHtml = rows.map(r => `<tr>
+      <td>${escapeHtml(r.time)}</td>
+      <td>${escapeHtml(group.line_name)}</td>
+      <td>${escapeHtml(r.product)}</td>
+      <td>${escapeHtml(r.event)}</td>
+      <td class="num">${r.initial_qty}</td>
+      <td class="num">${r.delta_qty > 0 ? '+'+r.delta_qty : r.delta_qty}</td>
+      <td class="num">${r.final_qty}</td>
+      <td>${r.associated_card != null ? escapeHtml(String(r.associated_card)) : '—'}</td>
+    </tr>`).join('');
+  // Single table, chronological across every product on this line —
+  // "All products" no longer splits into one table per product.
+  container.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Time</th><th>Supermarket</th><th>Product</th><th>Event</th><th class="num">In. Qty</th><th class="num">Δ Qty</th><th class="num">Fin. Qty</th><th>Associated Card</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>`;
+}
+
+function renderInventoryTimelinePanel(){
+  const data = lastInventoryTimelineData;
+  const kpiContainer = document.getElementById('inventoryKpiContainer');
+  const tableContainer = document.getElementById('inventoryTimelineContainer');
+  if(!data || !data.kpis || !data.kpis.length){
+    kpiContainer.innerHTML = '<div class="empty-state"><p>No inventory data.</p></div>';
+    tableContainer.innerHTML = '';
+    return;
+  }
+  renderInventoryLineSelect(data.kpis);
+  renderInventoryProductSelect(data.kpis);
+  renderInventoryKpiStrip(data.kpis);
+  renderInventoryEventTable(data.timeline || []);
+}
+
+// Print-report "every line" capture — same pattern as
+// captureSupermarketAllLines(): walk every line, force "All products"
+// for each so the printed page is a complete record (not whatever one
+// product the person last had selected live), snapshot the freshly-
+// rendered KPI+table DOM, then restore the live selection.
+function captureInventoryTimelineAllLines(){
+  const data = lastInventoryTimelineData;
+  if(!data || !data.kpis || !data.kpis.length) return '';
+  const lineNames = [...new Set(data.kpis.map(k => k.line_name))].sort();
+  if(!lineNames.length) return '';
+  const prevLine = invSelectedLine, prevProduct = invSelectedProduct;
+  const blocks = lineNames.map(name => {
+    invSelectedLine = name;
+    invSelectedProduct = 'all';
+    renderInventoryTimelinePanel();
+    // innerHTML, not outerHTML: the live containers carry
+    // id="inventoryKpiContainer" / id="inventoryTimelineContainer", and
+    // one of those ids is also targeted by replacePrintAllLinesBlock's
+    // idsToRemove cleanup afterward. Capturing outerHTML would embed
+    // that id three times over (once per line block); querySelector('#id')
+    // in the cleanup step only ever removes the first match, silently
+    // dropping one line's table. Wrapping innerHTML in a plain,
+    // id-less div avoids the collision entirely.
+    const kpiHtml = (document.getElementById('inventoryKpiContainer')||{}).innerHTML || '';
+    const tableHtml = (document.getElementById('inventoryTimelineContainer')||{}).innerHTML || '';
+    return `<div class="report-line-block">
+      <h4 class="report-line-heading">${escapeHtml(name)}</h4>
+      <div class="report-line-kpis">${kpiHtml}</div>
+      <div class="report-line-table">${tableHtml}</div>
+    </div>`;
+  });
+  invSelectedLine = prevLine;
+  invSelectedProduct = prevProduct;
+  renderInventoryTimelinePanel();
+  return blocks.join('');
 }
 
 /* =========================================================================

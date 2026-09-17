@@ -143,20 +143,35 @@ class SupermarketSnapshot:
     One timestamped observation of a Supermarket's stock level, recorded
     every time that Supermarket's state actually changes.
 
-    event_type is one of "withdrawal" | "deposit_partial" |
-    "deposit_batch" | "initial" — see telemetry.recorder.Recorder for the
-    call sites that emit each. n_available / pcs_partial are read straight
-    off SupermarketResource AFTER the triggering call, so this is always
-    the authoritative post-event state, not a delta.
+    event_type is one of "withdrawal" | "deposit_batch" | "initial" —
+    see telemetry.recorder.Recorder for the
+    call sites that emit each. n_available / pcs_partial are read
+    straight off SupermarketResource AFTER the triggering call, so
+    they're always the authoritative post-event state, not a delta.
+
+    delta_qty : signed change in n_available caused by this event, e.g.
+                -8 for a withdrawal, +20 for a deposit. Computed by
+                Recorder.record_supermarket() from the previous snapshot
+                for this (line_id, product_type) — callers never need to
+                pass it. None only for the very first "initial" snapshot
+                of a run (nothing to diff against yet).
+    kanban_card_id : identifier of the specific Kanban card this event is
+                associated with (the card being withdrawn, the card a
+                completed batch is being deposited against, or the card
+                being released to the chute), if the call site has one
+                to give. None for events with no single associated card
+                (e.g. an "initial" snapshot).
     """
     t:              float
     line_id:        int
     line_name:      str
     product_type:   str
-    event_type:     str   # "withdrawal" | "deposit_partial" | "deposit_batch" | "initial"
+    event_type:     str   # "withdrawal" | "deposit_batch" | "initial"
     n_available:    int
     pcs_partial:    int
     batch_size:     int
+    delta_qty:      Optional[int] = None
+    kanban_card_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -204,12 +219,17 @@ class GateActivityEntry:
     started (i.e. a changeover() call was very likely made somewhere
     inside this interval). This is a coarse, whole-interval flag, NOT a
     resolved sub-boundary.
+
+    production_type : "pull" | "push" — named to match
+        domain.orders.OrderRecord.production_type (renamed from
+        sim_class for consistency; ScheduleEvent.sim_class is unrelated
+        and keeps its own name).
     """
     t_start: float
     t_end: float
     line_id: int
     sachnummer: str
-    sim_class: str              # "pull" | "push"
+    production_type: str        # "pull" | "push"
     crew_id: Optional[int] = None   # which crew_process(crew_id=...) ran
                                      # this unit; None only for entries
                                      # from before this field existed.
