@@ -31,11 +31,11 @@ if TYPE_CHECKING:
 # _replay_chute_queue() can treat both sides identically.
 # ---------------------------------------------------------------------------
 
-def _pull_chute_events(kenv, lid: int) -> list[dict]:
+def _pull_chute_events(menv, lid: int) -> list[dict]:
     """
     True deposit/drain event history for pull cards passing through a
-    line's Chute, derived straight from each KanbanCard's own
-    .transitions log (kenv.card_registry) — there's no PushChuteLogEntry
+    line's Chute, derived straight from each PullCard's own
+    .transitions log (menv.card_registry) — there's no PushChuteLogEntry
     -style structure on the pull side, but transitions already record
     every state change with its raw sim-clock timestamp, so a
     "released_to_chute" entry IS the deposit event and the very next
@@ -53,7 +53,7 @@ def _pull_chute_events(kenv, lid: int) -> list[dict]:
     already does for push-only.
     """
     events: list[dict] = []
-    for card in getattr(kenv, "card_registry", {}).values():
+    for card in getattr(menv, "card_registry", {}).values():
         if getattr(card, "line_id", None) != lid:
             continue
         transitions = list(getattr(card, "transitions", []))
@@ -84,7 +84,7 @@ def _push_chute_events(push_chute_log, line_name: str) -> list[dict]:
         if ev.kind == "deposit":
             events.append({
                 "t": ev.t, "kind": "deposit", "chute_kind": "push",
-                "id": ev.entry_id, "product_type": ev.sachnummer, "rush": ev.rush,
+                "id": ev.entry_id, "product_type": ev.product_number, "rush": ev.rush,
             })
         elif ev.kind == "drain":
             events.append({
@@ -167,11 +167,11 @@ def _replay_chute_queue(events: list[dict], edge_s: float, frozen_zone_cards: in
 # Frame assembly — the "chute" key of one line's movement-state entry.
 # ---------------------------------------------------------------------------
 
-def build_chute_box(kenv, lid: int, line_name: str, t_s: float, include_push: bool) -> dict:
+def build_chute_box(menv, lid: int, line_name: str, t_s: float, include_push: bool) -> dict:
     """
-    Pull cards + push chunks, merged into one FIFO (see docstring: both
-    classes share ONE physical KanbanChuteResource queue, so drawing
-    them separately — pull cards as real tokens, push chunks as an
+    Pull cards + push cards, merged into one FIFO (see docstring: both
+    classes share ONE physical ChuteResource queue, so drawing
+    them separately — pull cards as real tokens, push cards as an
     anonymous "+N" badge — both under-counted the badge (a live
     snapshot, same value every animation frame) and hid which product
     each push entry actually was). `entries` merges both sides,
@@ -188,13 +188,13 @@ def build_chute_box(kenv, lid: int, line_name: str, t_s: float, include_push: bo
     SAME unified queue "entries" above (just filtered to kind=="pull"),
     not recomputed separately, so they can't drift out of sync with it.
     """
-    chute = kenv.kanban_chutes.get(lid) if getattr(kenv, "kanban_chutes", None) else None
+    chute = menv.pull_chutes.get(lid) if getattr(menv, "pull_chutes", None) else None
     frozen_zone_cards = getattr(chute, "frozen_zone_cards", 0) if chute is not None else 0
     chute_capacity = frozen_zone_cards + _CHUTE_CAPACITY_SLACK  # matches plant_structure's chute.capacity
 
-    chute_events = _pull_chute_events(kenv, lid)
+    chute_events = _pull_chute_events(menv, lid)
     if include_push:
-        chute_events += _push_chute_events(getattr(kenv, "push_chute_log", None), line_name)
+        chute_events += _push_chute_events(getattr(menv, "push_chute_log", None), line_name)
 
     queue = _replay_chute_queue(chute_events, t_s, frozen_zone_cards)
     entries_raw = [
@@ -233,7 +233,7 @@ def build_chute_box(kenv, lid: int, line_name: str, t_s: float, include_push: bo
 # Kept separate from _replay_chute_queue() rather than collapsed into a
 # filter over it: _replay_chute_queue()'s output items are {"kind", "id",
 # "product_type", "rush"} — no "t_entered". This function's contract is
-# {"entry_id", "sachnummer", "t_entered", "rush"}; deriving "t_entered"
+# {"entry_id", "product_number", "t_entered", "rush"}; deriving "t_entered"
 # from _replay_chute_queue would need that function to expose more state
 # than it currently does. Since no caller in this codebase currently
 # uses push_chute_entries_at (the movement-state frame gets its chute
@@ -246,17 +246,17 @@ def push_chute_entries_at(
 ) -> list[dict]:
     """
     Replay `log` up to and including edge_s to reconstruct which push
-    chunks were sitting in `line_name`'s Chute queue at that instant,
+    cards were sitting in `line_name`'s Chute queue at that instant,
     oldest-first (index 0 = closest to production / next to drain).
 
-    Returns [{"entry_id", "sachnummer", "t_entered", "rush"}, ...].
+    Returns [{"entry_id", "product_number", "t_entered", "rush"}, ...].
     """
     pending: list[dict] = []
     for ev in log:
         if ev.line != line_name or ev.t > edge_s:
             continue
         if ev.kind == "deposit":
-            item = {"entry_id": ev.entry_id, "sachnummer": ev.sachnummer, "t_entered": ev.t, "rush": ev.rush}
+            item = {"entry_id": ev.entry_id, "product_number": ev.product_number, "t_entered": ev.t, "rush": ev.rush}
             if ev.rush:
                 idx = sum(1 for p in pending if p["rush"])
                 pending.insert(idx, item)

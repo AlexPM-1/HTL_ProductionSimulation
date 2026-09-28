@@ -1,7 +1,7 @@
 """
 reports/movement/trace.py
 ============================
-Per-piece (Part) and per-card (KanbanCard) movement traces for the
+Per-piece (Part) and per-card (PullCard) movement traces for the
 frontend's Movement Simulation page. Complements reports/all/gantt.py
 (job/setup Gantt segments, at package level) and reports/pull/card_flow.py
 (card-level census + transitions) with a part-level trace: for each Part,
@@ -25,10 +25,10 @@ operations run and whether it's safe to add e.g. Part.t_drs_start/end
 there, mirroring the existing fields.
 
 Works unmodified for BOTH push (SimEnvironment) and Kanban
-(KanbanSimEnvironment, a subclass) runs, since Part / parts_out /
+(MixedSimEnvironment, a subclass) runs, since Part / parts_out /
 parts_in_wip / next_part_id are all defined once on SimEnvironment in
 sim/resources/environment.py and simply inherited by
-KanbanSimEnvironment.
+MixedSimEnvironment.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def build_part_trace_payload(
     """
     sim_env: any object exposing .parts_out (list[Part]) and, if
     include_wip=True, .parts_in_wip — i.e. a SimEnvironment or
-    KanbanSimEnvironment.
+    MixedSimEnvironment.
 
     line_id: filter to one line (1-indexed, matches Part.line_id), or
     None for all lines.
@@ -165,7 +165,7 @@ def build_part_ids_payload(sim_env, line_id: Optional[int] = None) -> dict:
 
 
 def build_card_trace_payload(
-    kenv,
+    menv,
     time_unit: TimeUnit = "h",
     card_id: Optional[int] = None,
     line_id: Optional[int] = None,
@@ -173,7 +173,7 @@ def build_card_trace_payload(
     time_offset_s: float = 0.0,
 ) -> dict:
     """
-    Per-card transition history straight off kenv.card_registry — a
+    Per-card transition history straight off menv.card_registry — a
     lighter, filterable sibling to
     reports.pull.card_flow.build_card_flow_payload(), which also computes
     an expensive plant-wide census (n_bins samples across every card) on
@@ -181,8 +181,8 @@ def build_card_trace_payload(
     using build_card_flow_payload() for the Card Flow tab's stacked-area
     chart.
 
-    kenv: a KanbanSimEnvironment — needs .card_registry
-    (dict[card_id -> KanbanCard], each with .transitions: list[(state,
+    menv: a MixedSimEnvironment — needs .card_registry
+    (dict[card_id -> PullCard], each with .transitions: list[(state,
     t)] in chronological raw sim-clock seconds).
 
     day_window_s: optional (start_s, end_s) in RAW sim-clock seconds. A
@@ -205,7 +205,7 @@ def build_card_trace_payload(
     divisor = _DIVISORS[time_unit]
 
     out_cards = []
-    for cid, card in kenv.card_registry.items():
+    for cid, card in menv.card_registry.items():
         if card_id is not None and cid != card_id:
             continue
         c_line_id = getattr(card, "line_id", None)
@@ -258,10 +258,10 @@ def build_card_trace_payload(
 #
 # Deliberately NOT resolved all the way down to a physical row/slot here:
 # that needs the Supermarket/BatchCollector row-capacity layout from
-# SimConfig (cfg.supermarkets, cfg.kanban_cards), and this module has no
+# SimConfig (cfg.supermarkets, cfg.pull_cards), and this module has no
 # import-time dependency on domain.config by design (see the module
 # docstring's "Works unmodified for BOTH push ... and Kanban ..." framing
-# — it only ever touches attributes on whatever sim_env/kenv object it's
+# — it only ever touches attributes on whatever sim_env/menv object it's
 # handed). reports.movement.frames.build_movement_state_payload() (via
 # reports.movement.supermarket / collector / collection_box / chute) is
 # the config-aware caller that turns this module's per-card groups into
@@ -275,8 +275,8 @@ def card_state_at(card, t_s: float) -> tuple[str, float]:
     this instant" convention reports.binning.state_at uses for
     Supermarket snapshots).
 
-    A KanbanCard's `transitions` list always has at least one entry —
-    KanbanSimEnvironment.create_card() records "in_supermarket" at
+    A PullCard's `transitions` list always has at least one entry —
+    MixedSimEnvironment.create_card() records "in_supermarket" at
     creation time before the card is ever handed back to a caller — so
     this never needs a sentinel/None return, even for t_s before the
     card existed (it just reports the creation state/time, which is
@@ -293,13 +293,13 @@ def card_state_at(card, t_s: float) -> tuple[str, float]:
 
 
 def build_movement_frame_cards(
-    kenv,
+    menv,
     t_s: float,
     line_id: Optional[int] = None,
 ) -> dict[tuple[int, str, str], list[dict]]:
     """
     One "frame" of card positions at raw sim-clock time t_s: every card in
-    kenv.card_registry, grouped by (line_id, state, product_type), each
+    menv.card_registry, grouped by (line_id, state, product_type), each
     group's cards ordered OLDEST-arrival-into-that-state first (i.e. by
     the timestamp returned alongside its state from card_state_at(), then
     card_id as a tiebreak for a same-instant tie).
@@ -317,13 +317,13 @@ def build_movement_frame_cards(
     layout in this module, the only sensible) consumer of this
     function's output.
 
-    kenv: a KanbanSimEnvironment — needs .card_registry (see
+    menv: a MixedSimEnvironment — needs .card_registry (see
     build_card_trace_payload's docstring for its shape).
 
     Returns
     -------
     {(line_id, state, product_type): [{"card_id": int, "since_t": float}, ...]}
-    Every card currently in kenv.card_registry is present in exactly one
+    Every card currently in menv.card_registry is present in exactly one
     group (a card always has a state), INCLUDING states with no Step-1
     Plant Layout box of their own ("withdrawn": between Supermarket and
     Collection Box; "in_production": between Chute release and the next
@@ -332,7 +332,7 @@ def build_movement_frame_cards(
     key maps onto a drawn box.
     """
     groups: dict[tuple[int, str, str], list[tuple[int, float]]] = {}
-    for card in kenv.card_registry.values():
+    for card in menv.card_registry.values():
         if line_id is not None and card.line_id != line_id:
             continue
         state, since = card_state_at(card, t_s)

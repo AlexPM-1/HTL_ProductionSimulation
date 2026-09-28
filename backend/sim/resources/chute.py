@@ -1,15 +1,15 @@
 """
 sim/resources/chute.py
 =======================
-KanbanChuteResource — the per-line, priority-ordered (H>M>L) production
+ChuteResource — the per-line, priority-ordered (H>M>L) production
 ADMISSION queue shared by both pull (Kanban) and push work. NOT the same
-thing as ChuteResource in sim/resources/inventory.py (the raw-material
-FIFO chute immediately upstream of a station) despite the shared "Chute"
-name — this one decides WHAT starts next; that one just tracks material
-fill level.
+thing as MaterialChuteResource in sim/resources/inventory.py (the
+raw-material FIFO chute immediately upstream of a station) despite the
+shared "Chute" name — this one decides WHAT starts next; that one just
+tracks material fill level.
 
-Populated by sim.fill.pull.collection_box (push_batch) and
-sim.fill.push.dispatch (push_chunk/push_rush_entry); drained by
+Populated by sim.fill.pull.collection_box (enter_pull_cards) and
+sim.fill.push.dispatch (enter_push_cards/push_rush_entry); drained by
 sim.drain.crew.crew_process() via peek_next_of_class()/pop_next_of_class().
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar, Optional
 
-from sim.resources.cards import KanbanCard
+from sim.resources.cards import PullCard
 
 
 @dataclass
@@ -27,44 +27,44 @@ class ChuteEntry:
     One unit of work waiting for admission to a line's stations — either
     a released Kanban batch (class-1/pull, released by
     sim.fill.pull.collection_box.collection_box_emptying_process()) or a
-    push chunk (class-2, from sim.fill.push.dispatch's push dispatcher). Both
-    classes now share ONE queue per line (see KanbanChuteResource)
+    push card (class-2, from sim.fill.push.dispatch's push dispatcher). Both
+    classes now share ONE queue per line (see ChuteResource)
     because the frozen zone (domain.policy.PushPolicyConfig.
     frozen_zone_cards) freezes the front of that ONE combined queue — a
-    rushed push chunk needs to see, and insert itself right before, the
+    rushed push card needs to see, and insert itself right before, the
     exact same boundary the pull side's releases are subject to.
 
     Attributes
     ----------
-    sim_class    : "pull" | "push"
-    product_type : sachnummer
+    production_type : "pull" | "push"
+    product_type : product_number
     n_cards      : how many 200pcs/30min "card units" this entry is
                    worth — the shared sizing unit the frozen zone counts
                    in. For a pull entry this is len(cards) (a released
                    batch can bundle several cards at once, per
                    CardsToTrigger). For a push entry this is always 1 by
-                   construction — push chunks are pre-sliced to
-                   <= PUSH_CHUNK_SIZE, i.e. exactly one card.
-    cards        : the KanbanCard objects (pull entries only; None for push)
+                   construction — push cards are pre-sliced to
+                   <= PUSH_CARD_SIZE, i.e. exactly one card.
+    cards        : the PullCard objects (pull entries only; None for push)
     payload      : opaque handle for push entries — sim.fill.push's own
-                   chunk/order object, round-tripped without this module
+                   push card/order object, round-tripped without this module
                    needing to import domain.orders.OrderRecord (keeps
                    sim/resources free of any push-specific type
                    dependency, same separation sim.produce already
                    keeps). None for pull entries.
     """
-    sim_class: str
+    production_type: str
     product_type: str
     n_cards: int
-    cards: Optional[list[KanbanCard]] = None
+    cards: Optional[list[PullCard]] = None
     payload: Optional[object] = None
 
 
 @dataclass
-class KanbanChuteResource:
+class ChuteResource:
     """
     Per-line priority-ordered admission queue — shared by BOTH class-1
-    (Kanban, via push_batch()) and class-2 (push, via push_chunk() /
+    (Kanban, via enter_pull_cards()) and class-2 (push, via enter_push_cards() /
     push_rush_entry()) production. Populated on the pull side by
     sim.fill.pull.collection_box.collection_box_emptying_process() once a
     product's BatchCollectorResource bucket reaches its CardsToTrigger
@@ -72,10 +72,10 @@ class KanbanChuteResource:
     push dispatcher; drained by sim.drain.crew.crew_process() (via
     sim.drain.pull_turn/push_turn), which pops the highest-priority
     pending entry (respecting the frozen zone — see below) and drives it
-    through sim.produce's part_lifecycle/run_kanban_batch/run_order chain.
+    through sim.produce's part_lifecycle/run_pull_batch/run_order chain.
 
-    NOT the same thing as ChuteResource (the raw-material FIFO chute
-    immediately upstream of Beladen, sim/resources/inventory.py) —
+    NOT the same thing as MaterialChuteResource (the raw-material
+    FIFO chute immediately upstream of Beladen, sim/resources/inventory.py) —
     unchanged, reused as-is once production of a popped entry actually
     starts. This class only decides WHAT starts next.
 
@@ -87,7 +87,7 @@ class KanbanChuteResource:
 
       - pop_next() still drains them first, in their existing order —
         freezing doesn't delay them, it protects them.
-      - No insertion (push_batch / push_chunk / push_rush_entry) may
+      - No insertion (enter_pull_cards / enter_push_cards / push_rush_entry) may
         land at or before the frozen boundary, REGARDLESS of priority —
         a same-tick "H" pull release can no longer resort itself ahead
         of an already-frozen entry the way the old single-list-sort
@@ -117,9 +117,6 @@ class KanbanChuteResource:
     tuple shape can't represent it. Unpack as
     `entry.product_type, entry.cards` instead.
 
-    Naming: kept as "KanbanChuteResource" even though push shares this
-    queue too now, to avoid touching every existing construction site /
-    class-1 reference for a rename.
     """
     line_id: int
     frozen_zone_cards: int = 0
@@ -170,7 +167,7 @@ class KanbanChuteResource:
     # Enqueue
     # ------------------------------------------------------------------
 
-    def push_batch(self, product_type: str, cards: list[KanbanCard]) -> None:
+    def enter_pull_cards(self, product_type: str, cards: list[PullCard]) -> None:
         """
         Enqueue one already-released Kanban batch (class-1/pull). Called
         by sim.fill.pull.collection_box.collection_box_emptying_process().
@@ -201,39 +198,39 @@ class KanbanChuteResource:
         priority = cards[0].priority
         for card in cards:
             entry = ChuteEntry(
-                sim_class="pull", product_type=product_type,
+                production_type="pull", product_type=product_type,
                 n_cards=1, cards=[card],
             )
             self._insert_ranked(entry, priority=priority)
 
-    def push_chunk(self, product_type: str, priority: str, payload: object) -> None:
+    def enter_push_cards(self, product_type: str, priority: str, payload: object) -> None:
         """
-        Enqueue one push chunk (class-2), NOT within
+        Enqueue one push card (class-2), NOT within
         PushPolicyConfig.rush_threshold_h of its due date. Called by
         sim.fill.push.dispatch's push dispatcher, as
-        `chute.push_chunk(sachnummer, priority="M", payload=chunk)`.
+        `chute.enter_push_cards(product_number, priority="M", payload=push_card)`.
         `priority` is accepted for call-site/logging compatibility but
         does not drive placement.
 
         Placement goes through _insert_at_boundary() — the same helper
         push_rush_entry() uses — rather than the rank-based
-        _insert_ranked(): a push chunk must be placed "before all cards
+        _insert_ranked(): a push card must be placed "before all cards
         on the chute", i.e. at the front of the movable (non-frozen)
         segment, ahead of every other pending entry, pull or push,
-        regardless of rank. What still distinguishes a rush chunk from a
+        regardless of rank. What still distinguishes a rush card from a
         normal one is upstream, in sim.fill.push.dispatch (which line
         gets picked, and whether the busy/retry search is skipped) — not
         chute placement.
         """
         entry = ChuteEntry(
-            sim_class="push", product_type=product_type,
+            production_type="push", product_type=product_type,
             n_cards=1, payload=payload,
         )
         self._insert_at_boundary(entry)
 
     def push_rush_entry(self, product_type: str, payload: object) -> None:
         """
-        Force-insert a rushed push chunk (class-2, within
+        Force-insert a rushed push card (class-2, within
         PushPolicyConfig.rush_threshold_h of its due date) immediately
         after the frozen zone — ahead of every normally-ranked entry
         currently waiting, bypassing H/M/L ranking entirely. Called by
@@ -258,28 +255,28 @@ class KanbanChuteResource:
         out to matter in practice.
 
         Thin wrapper over _insert_at_boundary() — the same helper
-        push_chunk() uses (see that method's docstring for why the two
+        enter_push_cards() uses (see that method's docstring for why the two
         share one placement path).
         """
         entry = ChuteEntry(
-            sim_class="push", product_type=product_type,
+            production_type="push", product_type=product_type,
             n_cards=1, payload=payload,
         )
         self._insert_at_boundary(entry)
 
     def _insert_at_boundary(self, entry: ChuteEntry) -> None:
         """
-        Shared insertion path for push_chunk()/push_rush_entry(): inserts
+        Shared insertion path for enter_push_cards()/push_rush_entry(): inserts
         `entry` exactly at first_unfrozen_index() — the front of the
         movable segment — bypassing rank/seq sorting entirely. Every
-        push chunk, rush or not, preempts to the front of whatever's
+        push card, rush or not, preempts to the front of whatever's
         still movable; if the whole queue is currently smaller than the
         frozen zone, first_unfrozen_index() returns len(_entries), so
         this becomes a same-position append (no jump possible) —
         matching "if there are less than 8 cards, priority is useless."
 
         Deliberately NOT going through _insert_ranked(): that method's
-        rank-based sort is still correct for pull's push_batch()
+        rank-based sort is still correct for pull's enter_pull_cards()
         (Kanban H/M/L tiers should keep sorting against each other), but
         push entries always preempt regardless of rank, so this method
         never risks touching the frozen prefix's slice — the one
@@ -291,7 +288,7 @@ class KanbanChuteResource:
 
     def _insert_ranked(self, entry: ChuteEntry, priority: str) -> None:
         """
-        Shared insertion path for push_batch()/push_chunk(): re-sorts
+        Shared insertion path for enter_pull_cards()/enter_push_cards(): re-sorts
         ONLY the movable tail of the queue (by rank, then insertion
         order) and leaves the frozen prefix's slice completely untouched
         — see the class docstring's "frozen zone" note for why this is
@@ -340,9 +337,9 @@ class KanbanChuteResource:
         _, _, entry = self._entries.pop(0)
         return entry
 
-    def pop_next_of_class(self, sim_class: str) -> Optional[ChuteEntry]:
+    def pop_next_of_class(self, production_type: str) -> Optional[ChuteEntry]:
         """
-        Pop the front entry ONLY if it belongs to `sim_class`; otherwise
+        Pop the front entry ONLY if it belongs to `production_type`; otherwise
         return None without touching the queue. Called by
         sim.drain.pull_turn/push_turn once a crew has secured the line's
         gate.
@@ -369,15 +366,15 @@ class KanbanChuteResource:
         if not self._entries:
             return None
         _, _, front_entry = self._entries[0]
-        if front_entry.sim_class != sim_class:
+        if front_entry.production_type != production_type:
             return None
         self._entries.pop(0)
         return front_entry
 
-    def peek_next_of_class(self, sim_class: str) -> Optional[ChuteEntry]:
+    def peek_next_of_class(self, production_type: str) -> Optional[ChuteEntry]:
         """
         Read-only counterpart to pop_next_of_class(): returns the front
-        entry if (and only if) it belongs to `sim_class`, WITHOUT removing
+        entry if (and only if) it belongs to `production_type`, WITHOUT removing
         it from the queue. Returns None if the queue is empty or the front
         entry belongs to the other class. Called by
         sim.drain.crew.crew_process() to decide whether to run a push or
@@ -394,13 +391,13 @@ class KanbanChuteResource:
         if not self._entries:
             return None
         _, _, front_entry = self._entries[0]
-        if front_entry.sim_class != sim_class:
+        if front_entry.production_type != production_type:
             return None
         return front_entry
 
     def __repr__(self) -> str:
         return (
-            f"KanbanChuteResource(line={self.line_id}, "
+            f"ChuteResource(line={self.line_id}, "
             f"pending_batches={self.n_pending_batches}, "
             f"frozen_zone_cards={self.frozen_zone_cards})"
         )

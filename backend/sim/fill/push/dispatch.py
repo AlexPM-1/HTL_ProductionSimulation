@@ -3,8 +3,8 @@ sim/fill/push/dispatch.py
 ============================
 push_dispatch_process() — assigns a push (class-2) order to a line and
 places it on that line's chute. One instance spawned per
-CustomerDemand row by sim.runner.run_mixed(). Uses
-sim.fill.push.chunking.build_push_order_record()/split_into_chunks().
+PushCustomerDemand row by sim.runner.run_mixed(). Uses
+sim.fill.push.splitting.build_push_order_record()/split_into_push_cards().
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ from domain.products import lookup as _plm_lookup
 from domain.timeparse import row_due_datetime as _row_due_datetime
 from sim.context import RunContext
 
-from sim.fill.push.chunking import build_push_order_record, split_into_chunks
+from sim.fill.push.splitting import build_push_order_record, split_into_push_cards
 
 
 def push_dispatch_process(ctx: RunContext, row):
     """
-    SimPy generator — the full lifecycle of ONE CustomerDemand (push) row,
+    SimPy generator — the full lifecycle of ONE PushCustomerDemand row,
     from "not yet visible" through "placed on a line's chute". One of
     these is spawned per row by sim.runner.run_mixed(); it does NOT wait
     for the order to actually finish producing (that's
@@ -88,8 +88,8 @@ def push_dispatch_process(ctx: RunContext, row):
     given) and dropped — same "can't be placed" bucket UnassignedOrder
     already represents elsewhere in the codebase.
     """
-    kenv = ctx.kenv
-    env = kenv.env
+    menv = ctx.menv
+    env = menv.env
 
     try:
         info = _plm_lookup(row.product_id)
@@ -191,27 +191,27 @@ def push_dispatch_process(ctx: RunContext, row):
         f"RUSH placement (<= {ctx.policy.rush_threshold_h}h before due date)"
         if rush else None
     )
-    order = build_push_order_record(kenv, row, info, assigned_line, due_dt, note=note)
+    order = build_push_order_record(menv, row, info, assigned_line, due_dt, note=note)
     order.record_assignment(assigned_line)
 
     line_id = ctx.line_id(assigned_line)
     chute = ctx.chutes[line_id]
-    chunks = split_into_chunks(order, ctx.chunk_size)
-    for chunk in chunks:
+    push_cards = split_into_push_cards(order, ctx.push_card_size)
+    for push_card in push_cards:
         if rush:
-            chute.push_rush_entry(order.sachnummer, payload=chunk)
+            chute.push_rush_entry(order.product_number, payload=push_card)
             if ctx.chute_tracker is not None:
-                ctx.chute_tracker.deposit(assigned_line, order.sachnummer, env.now, rush=True)
+                ctx.chute_tracker.deposit(assigned_line, order.product_number, env.now, rush=True)
         else:
-            chute.push_chunk(order.sachnummer, priority="M", payload=chunk)
+            chute.enter_push_cards(order.product_number, priority="M", payload=push_card)
             if ctx.chute_tracker is not None:
-                ctx.chute_tracker.deposit(assigned_line, order.sachnummer, env.now, rush=False)
+                ctx.chute_tracker.deposit(assigned_line, order.product_number, env.now, rush=False)
         # No explicit wake needed here — sim.runner._install_crew_chute_hooks()
-        # wraps push_chunk()/push_rush_entry() to notify ctx.activity_signal
+        # wraps enter_push_cards()/push_rush_entry() to notify ctx.activity_signal
         # after every insertion, so every idle crew re-checks automatically.
-    n_chunks = len(chunks)
+    n_push_cards = len(push_cards)
 
     if ctx.verbose:
         print(f"  [t={env.now:10.1f}] push: {row.product_id!r} qty={order.quantity} "
-              f"-> {assigned_line} ({n_chunks} chunk(s)){' [RUSH]' if rush else ''}, "
+              f"-> {assigned_line} ({n_push_cards} push card(s)){' [RUSH]' if rush else ''}, "
               f"due {due_dt.isoformat()}.")

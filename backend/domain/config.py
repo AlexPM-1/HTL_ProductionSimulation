@@ -2,21 +2,21 @@
 domain/config.py
 =================
 Single module for all configuration loading. Reads:
-  • ProductionPlanning_v6.xlsx  — push-model sheets (Process, Buffers,
+  • ProductionPlanningConfig.xlsx  — push-model sheets (Process, Buffers,
     Inspection, SetupTimes_Matrix, Packaging, SetupState, Inventories)
-    plus Kanban/pull sheets (KanbanConfig, CustomerDemandKanban,
-    KanbanCardsSetup, Supermarkets) and OEE/Shifts sheets — all Kanban,
+    plus pull sheets (PullConfig, PullCustomerDemand,
+    PullCardsSetup, Supermarkets) and OEE/Shifts sheets — all pull,
     OEE, and Shifts sheets are optional/additive: each parser returns an
     empty dict/list (never raises) if its sheet is absent, so an older
     workbook without them still loads fine.
-  • HTL_setup_times.xlsx         — TTNr-based changeover times, 1-MA / 2-MA;
+  • HTLSetupTimes.xlsx         — TTNr-based changeover times, 1-MA / 2-MA;
     one sheet per line.
 
 This module also owns the StationLine dataclass and LINE_STATIONS
 catalogue (station parameters per line), consumed by domain.products for
 routing/cycle-time resolution. Nothing in this file depends on SimPy.
 
-CustomerDemand / CustomerDemandKanban sheet layout
+PushCustomerDemand / PullCustomerDemand sheet layout
 ---------------------------------------------------
 Both sheets are flat, long event tables — one row per demand/withdrawal
 event, parsed by the shared `_parse_long_demand_rows`:
@@ -29,21 +29,21 @@ Deciding which of our production line(s) actually makes each order is the
 job of a LinePriorityStrategy (see domain.line_priority) driven by
 PRODUCT_MATRIX's feasible-lines data.
 
-Kanban / pull config
----------------------
-  KanbanConfig          → SimConfig.kanban_timing   : KanbanTimingConfig
+Pull config
+------------
+  PullConfig          → SimConfig.pull_timing_config   : PullTimingConfig
                           (withdrawal cadence + collection-box emptying
                           interval, both in minutes)
-  KanbanCardsSetup      → SimConfig.kanban_cards     : dict[sachnummer -> KanbanCardConfig]
-                          (BatchSize pcs/card + CardsToTrigger per product)
-  CustomerDemandKanban  → SimConfig.kanban_withdrawals: list[KanbanWithdrawalEvent]
-                          (one KanbanWithdrawalEvent per row; 0-qty rows
+  PullCardsSetup      → SimConfig.pull_cards     : dict[product_number -> PullCardConfig]
+                          (CardSize pcs/card + CardsToTrigger per product)
+  PullCustomerDemand  → SimConfig.pull_customer_demand: list[PullCustomerDemand]
+                          (one PullCustomerDemand per row; 0-qty rows
                           are dropped)
   Supermarkets          → SimConfig.supermarkets     : dict[line -> list[SupermarketSlotConfig]]
                           (full per-slot layout: Line | RowNumber | Type |
-                          Capacity | Sachnummer | InitialState |
-                          InitialPcsPartial. Shared by both Kanban
-                          ("Main runner" slots, pull) and push production
+                          Capacity | ProductNumber | InitialState |
+                          InitialPcsPartial. Shared by both pull
+                          ("Main runner" slots) and push production
                           ("Exotic" slots, no fixed product) — see
                           SupermarketSlotConfig docstring. The parser also
                           accepts the older "SupermInState" /
@@ -76,9 +76,9 @@ Usage
 -----
     from domain.config import load_config
     cfg = load_config(
-        excel_path="ProductionPlanning_v6.xlsx",
-        setup_xlsx_path="HTL_setup_times.xlsx",
-        product_master_path="product_master.xlsx",
+        excel_path="ProductionPlanningConfig.xlsx",
+        setup_xlsx_path="HTLSetupTimes.xlsx",
+        product_master_path="ProductMaster.xlsx",
     )
     print(cfg.summary())
 """
@@ -120,7 +120,7 @@ _SETUP_STATE_ALIAS: dict[str, str] = {
     "Visual Inspect": "Sichtpruefung",
 }
 
-_DEFAULT_EXCEL: Path = Path(__file__).with_name("ProductionPlanning_v6.xlsx")
+_DEFAULT_EXCEL: Path = Path(__file__).with_name("ProductionPlanningConfig.xlsx")
 
 
 # ===========================================================================
@@ -255,7 +255,7 @@ class InventoryConfig:
 
 
 @dataclass
-class ChuteConfig:
+class MaterialChuteConfig:
     """
     A capacity-limited FIFO chute immediately upstream of a station, as
     loaded from the "Inventories" sheet (Type == "FIFO_Chute").
@@ -323,9 +323,9 @@ class PackagingConfig:
 
 
 @dataclass
-class CustomerDemand:
+class PushCustomerDemand:
     """
-    One demand event row from the "CustomerDemand" sheet — a flat, long
+    One demand event row from the "PushCustomerDemand" sheet — a flat, long
     event table with one row per demand event:
 
         Date | Time | Product | TotalQuantity | LineId
@@ -338,7 +338,7 @@ class CustomerDemand:
 
     `line_id` is kept on the row purely for traceability / potential
     future use — e.g. matching this event back to a specific
-    KanbanWithdrawalEvent — but nothing in this module currently uses it
+    PullCustomerDemand — but nothing in this module currently uses it
     to pick a production line.
 
     Attributes
@@ -348,7 +348,7 @@ class CustomerDemand:
     time_slot    : the "Time" cell, e.g. "06:00:00" (kept as the
                    workbook's string; converting to a sim offset is the
                    runner's job)
-    product_id   : sachnummer, e.g. "F00RC00419"
+    product_id   : product_number, e.g. "F00RC00419"
     total_qty    : the "TotalQuantity" column — demand for this product
                    at this (Date, Time)
     line_id      : the downstream line requesting the product, e.g.
@@ -369,53 +369,53 @@ class CustomerDemand:
     def quantities(self) -> dict[str, int]:
         """
         Backward-compat shim for old callers that read
-        `CustomerDemand.quantities` as a {product_id: qty} singleton dict.
+        `PushCustomerDemand.quantities` as a {product_id: qty} singleton dict.
         """
         return {self.product_id: self.total_qty}
 
 
 # ===========================================================================
-# Kanban / pull config dataclasses — loaded from ProductionPlanning_v6.xlsx:
-# KanbanConfig, KanbanCardsSetup, CustomerDemandKanban, Supermarkets
+# Pull config dataclasses — loaded from ProductionPlanningConfig.xlsx:
+# PullConfig, PullCardsSetup, PullCustomerDemand, Supermarkets
 # ===========================================================================
 
 @dataclass
-class KanbanCardConfig:
+class PullCardConfig:
     """
-    Per-product Kanban card parameters, from the "KanbanCardsSetup" sheet.
+    Per-product Pull card parameters, from the "PullCardsSetup" sheet.
 
-    One row per sachnummer (63 rows in the current workbook — every product
+    One row per product_number (63 rows in the current workbook — every product
     in PRODUCT_MATRIX, even though only 8 of them currently appear in the
-    CustomerDemandKanban withdrawal schedule).
+    PullCustomerDemand withdrawal schedule).
 
     Attributes
     ----------
-    sachnummer       : product identifier, e.g. "F00RC00419"
-    batch_size       : pieces represented by one Kanban card (workbook
+    product_number   : product identifier, e.g. "F00RC00419"
+    card_size        : pieces represented by one Pull card (workbook
                        default 200; user has since hand-edited some rows —
                        do not assume a uniform value across products)
     cards_to_trigger : number of cards that must accumulate in the
-                       Batch-Size Collector (per product) before that
-                       batch is released to the Kanban Chute for
+                       Card-Size Collector (per product) before that
+                       batch is released to the Pull Chute for
                        production (workbook default 5; user has since
                        hand-edited most rows, ranging 2–8 in the current
                        file — do not assume a uniform value)
     eligible_lines   : ordered list of line names (e.g. ["HTL3", "HTL5", "HTL6"])
-                       this product's Kanban cards are drawn from /
+                       this product's Pull cards are drawn from /
                        produced on, parsed from the "HTL3"/"HTL5"/"HTL6"
-                       columns of "KanbanCardsSetup" (an "X" marks a line
+                       columns of "PullCardsSetup" (an "X" marks a line
                        as eligible).
     """
-    sachnummer: str
-    batch_size: int
+    product_number: str
+    card_size: int
     cards_to_trigger: int
     eligible_lines: list[str] = field(default_factory=list)
 
 
 @dataclass
-class KanbanWithdrawalEvent:
+class PullCustomerDemand:
     """
-    One row from the "CustomerDemandKanban" sheet — a single customer
+    One row from the "PullCustomerDemand" sheet — a single customer
     withdrawal event: one product, withdrawn at one point in time, by one
     downstream line. The sheet is a flat, long event table, one row per
     withdrawal:
@@ -425,7 +425,7 @@ class KanbanWithdrawalEvent:
     `line_id` is a DOWNSTREAM line — whoever downstream is requesting the
     product (e.g. "Line 12") — it is NOT one of our production lines
     (HTL3/HTL5/HTL6), so it is taken as-is from the sheet and not
-    validated against KanbanCardsSetup.eligible_lines. Assigning a
+    validated against PullCardsSetup.eligible_lines. Assigning a
     withdrawal to one of our production lines happens downstream, in
     sim.fill.pull (assignment.select_supermarket_for_withdrawal).
 
@@ -437,9 +437,9 @@ class KanbanWithdrawalEvent:
                 string; NOT converted to a simulation offset here — that
                 conversion is the runner's job, since it also needs to
                 know the sim start time and how times wrap past midnight)
-    product   : sachnummer withdrawn, e.g. "F00RJ02491"
+    product   : product_number withdrawn, e.g. "F00RJ02491"
     quantity  : pieces withdrawn (only rows with quantity > 0 are kept —
-                see _parse_customer_demand_kanban_sheet)
+                see _parse_customer_demand_pull_sheet)
     line_id   : the downstream line requesting the product, e.g.
                 "Line 12" — NOT one of our production lines
     """
@@ -457,15 +457,15 @@ class SupermarketSlotConfig:
     "Supermarkets" sheet (the parser also accepts the older "SupermInState"
     / "SupermarketInitialState" sheet names for backward compatibility):
 
-        Line | RowNumber | Type | Capacity | Sachnummer | InitialState | InitialPcsPartial
+        Line | RowNumber | Type | Capacity | ProductNumber | InitialState | InitialPcsPartial
 
-    Supermarkets are shared by both Kanban (pull) and push production:
+    Supermarkets are shared by both pull and push production:
     each line's supermarket has some slots permanently dedicated to one
-    product ("Main runner" rows — `sachnummer` is fixed, pull/Kanban
+    product ("Main runner" rows — `product_number` is fixed, pull
     replenished) and some slots for whichever other/exotic products need
     to be pushed through without a dedicated slot ("Exotic" rows —
-    `sachnummer` is blank; not a specific product). A line can have
-    several "Main runner" slots for the *same* sachnummer (e.g. HTL3 rows
+    `product_number` is blank; not a specific product). A line can have
+    several "Main runner" slots for the *same* product_number (e.g. HTL3 rows
     1 & 2 are both F00RJ02491) — these are separate physical lanes, not a
     duplicate/error, and each has its own capacity/seed stock.
 
@@ -474,17 +474,17 @@ class SupermarketSlotConfig:
     line                 : line name, e.g. "HTL3"
     row_number           : 1-based row/slot number within this line's
                            supermarket
-    slot_type            : "Main runner" (pull/Kanban, dedicated to
-                           `sachnummer`) or "Exotic" (push, generic slot —
-                           `sachnummer` is blank); see is_main_runner /
+    slot_type            : "Main runner" (pull, dedicated to
+                           `product_number`) or "Exotic" (push, generic slot —
+                           `product_number` is blank); see is_main_runner /
                            is_exotic
     capacity             : max whole cards/batches this slot can hold
-    sachnummer           : product assigned to this slot; "" for Exotic
+    product_number       : product assigned to this slot; "" for Exotic
                            rows (no fixed product)
     initial_state        : t=0 seed stock (full cards/batches) sitting in
                            this slot
     initial_pcs_partial  : t=0 leftover pieces not yet forming a full
-                           card/batch in this slot (0..batch_size-1); a
+                           card/batch in this slot (0..card_size-1); a
                            partial pack CANNOT be withdrawn on its own —
                            withdrawal must wait for production to
                            complete the pack (per open-question #3 in the
@@ -494,13 +494,13 @@ class SupermarketSlotConfig:
     row_number: int
     slot_type: str
     capacity: int
-    sachnummer: str
+    product_number: str
     initial_state: int
     initial_pcs_partial: int
 
     @property
     def is_main_runner(self) -> bool:
-        """True if this is a pull/Kanban slot dedicated to `sachnummer`."""
+        """True if this is a pull slot dedicated to `product_number`."""
         return self.slot_type.strip().lower() == "main runner"
 
     @property
@@ -510,9 +510,9 @@ class SupermarketSlotConfig:
 
 
 @dataclass
-class KanbanTimingConfig:
+class PullTimingConfig:
     """
-    Cadence parameters for the Kanban loop, from the "KanbanConfig" sheet
+    Cadence parameters for the Pull loop, from the "PullConfig" sheet
     (2 rows in the current workbook). Resolves open question #7 in the
     handoff notes: these were previously proposed as hardcoded constants
     in the process-logic module; they are now Excel-driven, consistent
@@ -521,24 +521,14 @@ class KanbanTimingConfig:
     Attributes
     ----------
     withdrawal_cadence_min       : minutes between successive
-                                   CustomerDemandKanban rows (workbook: 15)
+                                   PullCustomerDemand rows (workbook: 15)
     collection_box_emptying_min  : minutes between Collection-Box →
-                                   Batch-Size-Collector emptying events
+                                   Card-Size-Collector emptying events
                                    (workbook: 30 — i.e. every 2nd
                                    withdrawal tick at the current cadence)
-    supermarket_capacity_cards   : max whole Kanban cards (batches) any one
-                                   (line, product) Supermarket lane may hold
-                                   at once — from the "KanbanConfig" sheet
-                                   (Parameter cell containing "capacity" or
-                                   "supermarket"), default 25 if absent.
-                                   Enforced as the bound on the lane's
-                                   simpy.Store in build_kanban_environment();
-                                   a full lane makes _return_card_to_supermarket's
-                                   `store.put()` block until space frees up.
     """
     withdrawal_cadence_min: float = 15.0
     collection_box_emptying_min: float = 30.0
-    supermarket_capacity_cards: int = 25
 
 
 @dataclass
@@ -571,7 +561,7 @@ class OEEBinConfig:
 
 
 # Bare 'DD.MM.YYYY' (optionally followed by more text) — same convention as
-# the CustomerDemand/CustomerDemandKanban "Date" cells throughout this
+# the PushCustomerDemand/PullCustomerDemand "Date" cells throughout this
 # module. Used only by the "Shifts" sheet's "Day" column parser below.
 _SHIFT_DATE_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})")
 
@@ -735,11 +725,11 @@ class SimConfig:
 
     Setup-time lookup conventions
     ------------------------------
-    csv_setup_times   : full TTNr-based table from HTL_setup_times.xlsx
+    csv_setup_times   : full TTNr-based table from HTLSetupTimes.xlsx
                         keyed as [line_name][n_workers][(from_ttnr, to_ttnr)] → seconds
-    sachnummer_to_ttnr: loaded from product_master.xlsx
-                        keyed as sachnummer (e.g. "F00RC00967") → TTNr (e.g. 967)
-                        use this to resolve a product's sachnummer to its TTNr
+    product_number_to_ttnr: loaded from ProductMaster.xlsx
+                        keyed as product_number (e.g. "F00RC00967") → TTNr (e.g. 967);
+                        use this to resolve a product's product_number to its TTNr
                         before looking up setup times in csv_setup_times
     """
     n_lines: int
@@ -751,7 +741,7 @@ class SimConfig:
     inspection: dict[str, InspectionConfig]
 
     packaging:  PackagingConfig
-    demand:     list[CustomerDemand]
+    demand:     list[PushCustomerDemand]
 
     # dict[line_name → dict[canonical_station → product_label]]
     initial_setup_state: dict[str, dict[str, str]]
@@ -759,10 +749,10 @@ class SimConfig:
     # dict[line_name → dict[n_workers → dict[(from_ttnr, to_ttnr) → minutes]]]
     csv_setup_times: dict[str, dict[int, dict[tuple[int, int], int]]]
 
-    # sachnummer (e.g. "F00RC00967") → TTNr integer (e.g. 967)
-    # loaded from product_master.xlsx; used to bridge product objects to
+    # product_number (e.g. "F00RC00967") → TTNr integer (e.g. 967)
+    # loaded from ProductMaster.xlsx; used to bridge product objects to
     # the TTNr-keyed csv_setup_times table before setup-time lookup
-    sachnummer_to_ttnr: dict[str, int]
+    product_number_to_ttnr: dict[str, int]
 
     # StationLine catalogue (consumed by domain.products)
     line_stations: dict[str, list[StationLine]]
@@ -775,27 +765,27 @@ class SimConfig:
     # material / DRS material — mirrors the chutes structure below.
     inventories: dict[str, list[InventoryConfig]] = field(default_factory=dict)
 
-    # dict[chute_name → list[ChuteConfig]]  — from "Inventories" sheet
+    # dict[chute_name → list[MaterialChuteConfig]]  — from "Inventories" sheet
     # (Type == "FIFO_Chute"). One entry per (name, stored_type) lane, e.g.
     # chutes["Chu_vor_HTL3"] has 3 lanes: Standard / Lochfilter / DRS.
-    chutes: dict[str, list[ChuteConfig]] = field(default_factory=dict)
+    chutes: dict[str, list[MaterialChuteConfig]] = field(default_factory=dict)
 
-    # --- Kanban / pull fields (all additive; empty/default when the
-    # Kanban sheets are absent from the workbook — see module docstring) --
+    # --- Pull fields (all additive; empty/default when the
+    # pull sheets are absent from the workbook — see module docstring) --
 
-    # sachnummer → KanbanCardConfig, from "KanbanCardsSetup"
-    kanban_cards: dict[str, KanbanCardConfig] = field(default_factory=dict)
+    # product_number → PullCardConfig, from "PullCardsSetup"
+    pull_cards: dict[str, PullCardConfig] = field(default_factory=dict)
 
-    # one entry per CustomerDemandKanban row, in sheet order
-    kanban_withdrawals: list[KanbanWithdrawalEvent] = field(default_factory=list)
+    # one entry per PullCustomerDemand row, in sheet order
+    pull_customer_demand: list[PullCustomerDemand] = field(default_factory=list)
 
     # line_name → list[SupermarketSlotConfig], from "Supermarkets"
     # (one entry per physical slot/row in that line's supermarket, in
     # sheet order — see SupermarketSlotConfig docstring)
     supermarkets: dict[str, list[SupermarketSlotConfig]] = field(default_factory=dict)
 
-    # withdrawal cadence + collection-box emptying interval, from "KanbanConfig"
-    kanban_timing: KanbanTimingConfig = field(default_factory=KanbanTimingConfig)
+    # withdrawal cadence + collection-box emptying interval, from "PullConfig"
+    pull_timing_config: PullTimingConfig = field(default_factory=PullTimingConfig)
 
     # --- OEE field (additive; empty when the "OEE" sheet is absent) ------
 
@@ -879,14 +869,14 @@ class SimConfig:
                         f"({ch.replenish_qty_pcs}pcs)"
                     )
 
-        if self.kanban_cards:
-            out.append("\n--- Kanban ---")
+        if self.pull_cards:
+            out.append("\n--- Pull ---")
             out.append(
-                f"  Timing: withdrawal every {self.kanban_timing.withdrawal_cadence_min} min, "
-                f"collection-box emptied every {self.kanban_timing.collection_box_emptying_min} min"
+                f"  Timing: withdrawal every {self.pull_timing_config.withdrawal_cadence_min} min, "
+                f"collection-box emptied every {self.pull_timing_config.collection_box_emptying_min} min"
             )
-            out.append(f"  Cards configured : {len(self.kanban_cards)} products")
-            out.append(f"  Withdrawal events: {len(self.kanban_withdrawals)}")
+            out.append(f"  Cards configured : {len(self.pull_cards)} products")
+            out.append(f"  Withdrawal events: {len(self.pull_customer_demand)}")
             n_slots = sum(len(v) for v in self.supermarkets.values())
             out.append(f"  Supermarket slots: {n_slots} across {len(self.supermarkets)} line(s)")
 
@@ -1134,9 +1124,9 @@ def _norm_chute_type(raw) -> str:
 
 def _parse_inventories_sheet(
     xls: pd.ExcelFile,
-) -> tuple[dict[str, list[InventoryConfig]], dict[str, list[ChuteConfig]]]:
+) -> tuple[dict[str, list[InventoryConfig]], dict[str, list[MaterialChuteConfig]]]:
     """
-    Parse the "Inventories" sheet into InventoryConfig / ChuteConfig
+    Parse the "Inventories" sheet into InventoryConfig / MaterialChuteConfig
     objects.
 
     Expected columns (row order per spec, header row auto-detected):
@@ -1162,7 +1152,7 @@ def _parse_inventories_sheet(
     -------
     (inventories, chutes)
         inventories : dict[name -> list[InventoryConfig]]  (lanes)
-        chutes      : dict[name -> list[ChuteConfig]]       (lanes)
+        chutes      : dict[name -> list[MaterialChuteConfig]]       (lanes)
 
     If the sheet is absent (older workbook without this extension), both
     dicts are returned empty so the rest of load_config() still works —
@@ -1213,7 +1203,7 @@ def _parse_inventories_sheet(
         return None
 
     inventories: dict[str, list[InventoryConfig]] = {}
-    chutes: dict[str, list[ChuteConfig]] = {}
+    chutes: dict[str, list[MaterialChuteConfig]] = {}
 
     for _, row in df.iterrows():
         name = str(row.get("Name", "")).strip()
@@ -1245,7 +1235,7 @@ def _parse_inventories_sheet(
                 is_unbounded       = _is_unbounded(row.get("SupermarketCapacity_pcs")),
             ))
         elif row_type == "fifo_chute":
-            chutes.setdefault(name, []).append(ChuteConfig(
+            chutes.setdefault(name, []).append(MaterialChuteConfig(
                 name                = name,
                 station             = station,
                 upstream_station    = upstream,
@@ -1317,14 +1307,14 @@ def _find_header_row(
 def _parse_long_demand_rows(xls: pd.ExcelFile, sheet_name: str) -> list[dict]:
     """
     Shared parser for the long-format demand tables — both
-    "CustomerDemand" and "CustomerDemandKanban" share this layout,
+    "PushCustomerDemand" and "PullCustomerDemand" share this layout,
     one row per demand/withdrawal event:
 
         Date | Time | Product | TotalQuantity | LineId
 
     "LineId" is a DOWNSTREAM line (whoever is requesting the product), NOT
     one of our production lines (HTL3/HTL5/HTL6) — see the module
-    docstring and the CustomerDemand / KanbanWithdrawalEvent docstrings.
+    docstring and the PushCustomerDemand / PullCustomerDemand docstrings.
 
     Columns are matched by header name (case/whitespace/underscore
     insensitive), so column order in the workbook doesn't matter. Read
@@ -1412,14 +1402,14 @@ def _parse_long_demand_rows(xls: pd.ExcelFile, sheet_name: str) -> list[dict]:
 def _parse_demand_sheet(
     xls: pd.ExcelFile,
     line_names: Optional[list[str]] = None,
-) -> list[CustomerDemand]:
+) -> list[PushCustomerDemand]:
     """
-    Parse the "CustomerDemand" sheet — flat long layout:
+    Parse the "PushCustomerDemand" sheet — flat long layout:
 
         Date | Time | Product | TotalQuantity | LineId
 
     One row per (Date, Time, Product) demand event. "LineId" is a
-    DOWNSTREAM line, not one of our production lines — see CustomerDemand
+    DOWNSTREAM line, not one of our production lines — see PushCustomerDemand
     docstring — there is no per-HTL-line split to parse; that's decided
     downstream by a LinePriorityStrategy (see domain.line_priority).
 
@@ -1430,16 +1420,16 @@ def _parse_demand_sheet(
                   load_config(), which still passes it; unused, since the
                   sheet carries no per-HTL-line split.
     """
-    rows = _parse_long_demand_rows(xls, "CustomerDemand")
+    rows = _parse_long_demand_rows(xls, "PushCustomerDemand")
 
     seen_counts: dict[tuple[str, str, str], int] = {}
-    result: list[CustomerDemand] = []
+    result: list[PushCustomerDemand] = []
     for r in rows:
         key = (r["date"], r["time"], r["product"])
         order_id = seen_counts.get(key, 0)
         seen_counts[key] = order_id + 1
 
-        result.append(CustomerDemand(
+        result.append(PushCustomerDemand(
             period_label=r["date"],
             time_slot=r["time"],
             product_id=r["product"],
@@ -1505,36 +1495,35 @@ def _parse_setup_state_sheet(
 
 
 # ===========================================================================
-# Kanban / pull sheet parsers
+# Pull sheet parsers
 #
 # Every parser below returns an empty dict/list (never raises) if its sheet
 # is absent, so load_config() stays usable against a workbook that
-# predates the Kanban extension. Each parser also warns (not raises) so
+# predates the pull extension. Each parser also warns (not raises) so
 # the gap is visible without breaking the push-model path.
 # ===========================================================================
 
-def _parse_kanban_config_sheet(xls: pd.ExcelFile) -> KanbanTimingConfig:
+def _parse_pull_config_sheet(xls: pd.ExcelFile) -> PullTimingConfig:
     """
-    Parse the "KanbanConfig" sheet: a simple Parameter/Value/Unit table,
+    Parse the "PullConfig" sheet: a simple Parameter/Value/Unit table,
     2 rows in the current workbook:
-        kanban withdrawal cadence | 15 | min
+        pull withdrawal cadence | 15 | min
         collection-box emptying   | 30 | min
 
     Matching is substring-based on the Parameter cell (lower-cased) so
     minor wording tweaks in the sheet don't break parsing. Falls back to
-    the KanbanTimingConfig defaults (15 / 30 min) for any parameter not
+    the PullTimingConfig defaults (15 / 30 min) for any parameter not
     found, with a warning.
     """
-    sheet_name = "KanbanConfig"
+    sheet_name = "PullConfig"
     if sheet_name not in xls.sheet_names:
-        return KanbanTimingConfig()
+        return PullTimingConfig()
 
     df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
     df.columns = [str(c).strip() for c in df.columns]
 
     withdrawal_cadence: Optional[float] = None
     collection_box: Optional[float] = None
-    supermarket_capacity: Optional[float] = None
 
     for _, row in df.iterrows():
         param = str(row.get("Parameter", "")).strip().lower()
@@ -1546,44 +1535,34 @@ def _parse_kanban_config_sheet(xls: pd.ExcelFile) -> KanbanTimingConfig:
             withdrawal_cadence = val
         elif "collection" in param or "collection-box" in param or "emptying" in param:
             collection_box = val
-        elif "capacity" in param or "supermarket" in param:
-            supermarket_capacity = val
 
-    defaults = KanbanTimingConfig()
+    defaults = PullTimingConfig()
     if withdrawal_cadence is None or collection_box is None:
         import warnings
         warnings.warn(
-            "'KanbanConfig' sheet is missing the withdrawal-cadence or "
+            "'PullConfig' sheet is missing the withdrawal-cadence or "
             "collection-box-emptying parameter; falling back to defaults "
             f"({defaults.withdrawal_cadence_min} / "
             f"{defaults.collection_box_emptying_min} min) for the missing one(s).",
             stacklevel=2,
         )
-    if supermarket_capacity is None:
-        import warnings
-        warnings.warn(
-            "'KanbanConfig' sheet is missing the supermarket-capacity "
-            f"parameter; falling back to default ({defaults.supermarket_capacity_cards} cards).",
-            stacklevel=2,
-        )
 
-    return KanbanTimingConfig(
+    return PullTimingConfig(
         withdrawal_cadence_min=withdrawal_cadence if withdrawal_cadence is not None else defaults.withdrawal_cadence_min,
         collection_box_emptying_min=collection_box if collection_box is not None else defaults.collection_box_emptying_min,
-        supermarket_capacity_cards=int(supermarket_capacity) if supermarket_capacity is not None else defaults.supermarket_capacity_cards,
     )
 
 
-def _parse_kanban_cards_sheet(xls: pd.ExcelFile) -> dict[str, KanbanCardConfig]:
+def _parse_pull_cards_sheet(xls: pd.ExcelFile) -> dict[str, PullCardConfig]:
     """
-    Parse the "KanbanCardsSetup" sheet into {sachnummer: KanbanCardConfig}.
+    Parse the "PullCardsSetup" sheet into {product_number: PullCardConfig}.
 
-    Expected columns (header row 0): Sachnummer | BatchSize | CardsToTrigger
+    Expected columns (header row 0): ProductNumber | CardSize | CardsToTrigger
     | HTL3 | HTL5 | HTL6 (a trailing free-text notes column may also be
     present — ignored).
 
     The HTL3/HTL5/HTL6 columns mark, per product, which line(s) that
-    product's Kanban cards are eligible to be drawn from / produced on —
+    product's Pull cards are eligible to be drawn from / produced on —
     an "X" (case-insensitive, any surrounding whitespace) marks a line as
     eligible; blank/NaN means not eligible for that line. Eligible lines
     are collected into eligible_lines in a fixed canonical order (HTL3,
@@ -1592,11 +1571,11 @@ def _parse_kanban_cards_sheet(xls: pd.ExcelFile) -> dict[str, KanbanCardConfig]:
     checked, so older workbooks without these columns still parse fine
     (eligible_lines simply comes back empty for every row).
 
-    Rows with a blank Sachnummer, or a missing BatchSize/CardsToTrigger, are
+    Rows with a blank ProductNumber, or a missing CardSize/CardsToTrigger, are
     skipped silently (mirrors the "-"/blank-tolerance pattern used elsewhere
     in this module).
     """
-    sheet_name = "KanbanCardsSetup"
+    sheet_name = "PullCardsSetup"
     if sheet_name not in xls.sheet_names:
         return {}
 
@@ -1612,21 +1591,21 @@ def _parse_kanban_cards_sheet(xls: pd.ExcelFile) -> dict[str, KanbanCardConfig]:
             return False
         return str(raw).strip().lower() == "x"
 
-    result: dict[str, KanbanCardConfig] = {}
+    result: dict[str, PullCardConfig] = {}
     for _, row in df.iterrows():
-        sachnr = str(row.get("Sachnummer", "")).strip()
-        if not sachnr or sachnr.lower() == "nan":
+        product_number = str(row.get("ProductNumber", "")).strip()
+        if not product_number or product_number.lower() == "nan":
             continue
-        batch_raw = row.get("BatchSize")
+        card_size_raw = row.get("CardSize")
         trigger_raw = row.get("CardsToTrigger")
-        if pd.isna(batch_raw) or pd.isna(trigger_raw):
+        if pd.isna(card_size_raw) or pd.isna(trigger_raw):
             continue
 
         eligible_lines = [ln for ln in line_cols if _is_marked(row.get(ln))]
 
-        result[sachnr] = KanbanCardConfig(
-            sachnummer=sachnr,
-            batch_size=int(batch_raw),
+        result[product_number] = PullCardConfig(
+            product_number=product_number,
+            card_size=int(card_size_raw),
             cards_to_trigger=int(trigger_raw),
             eligible_lines=eligible_lines,
         )
@@ -1634,37 +1613,37 @@ def _parse_kanban_cards_sheet(xls: pd.ExcelFile) -> dict[str, KanbanCardConfig]:
     return result
 
 
-def _parse_customer_demand_kanban_sheet(
+def _parse_customer_demand_pull_sheet(
     xls: pd.ExcelFile,
-    kanban_cards: Optional[dict[str, "KanbanCardConfig"]] = None,
-) -> list[KanbanWithdrawalEvent]:
+    pull_cards: Optional[dict[str, "PullCardConfig"]] = None,
+) -> list[PullCustomerDemand]:
     """
-    Parse the "CustomerDemandKanban" sheet — flat long layout:
+    Parse the "PullCustomerDemand" sheet — flat long layout:
 
         Date | Time | Product | TotalQuantity | LineId
 
-    Returns one KanbanWithdrawalEvent per row (one row = one withdrawal
+    Returns one PullCustomerDemand per row (one row = one withdrawal
     event), in sheet order.
 
     "LineId" is a DOWNSTREAM line (whoever downstream is requesting the
     product), NOT one of our production lines (HTL3/HTL5/HTL6) — `line_id`
-    is taken as-is from the sheet and not validated against `kanban_cards`
+    is taken as-is from the sheet and not validated against `pull_cards`
     at all.
 
-    `kanban_cards` is accepted for call-signature compatibility with
-    load_config(), which passes the already-parsed KanbanCardsSetup dict
+    `pull_cards` is accepted for call-signature compatibility with
+    load_config(), which passes the already-parsed PullCardsSetup dict
     in, but is currently unused by this parser.
 
     Rows with quantity <= 0 (or blank) are dropped — nothing was actually
     withdrawn, so there's nothing to act on downstream.
     """
-    rows = _parse_long_demand_rows(xls, "CustomerDemandKanban")
+    rows = _parse_long_demand_rows(xls, "PullCustomerDemand")
 
-    result: list[KanbanWithdrawalEvent] = []
+    result: list[PullCustomerDemand] = []
     for r in rows:
         if r["quantity"] <= 0:
             continue
-        result.append(KanbanWithdrawalEvent(
+        result.append(PullCustomerDemand(
             date=r["date"],
             time=r["time"],
             product=r["product"],
@@ -1682,12 +1661,12 @@ def _parse_supermarkets_sheet(
     Parse the "Supermarkets" sheet into {line: [SupermarketSlotConfig, ...]},
     one entry per physical slot/row, in sheet order within each line.
 
-        Line | RowNumber | Type | Capacity | Sachnummer | InitialState | InitialPcsPartial
+        Line | RowNumber | Type | Capacity | ProductNumber | InitialState | InitialPcsPartial
 
     Also accepts the older "SupermInState" or "SupermarketInitialState"
     sheet names for backward compatibility with not-yet-migrated
     workbooks; tries "Supermarkets" first. Those older sheets used a
-    narrower per-(line,sachnummer) layout (Line | Sachnummer |
+    narrower per-(line,product_number) layout (Line | ProductNumber |
     InitialCards | InitialPcsPartial, no RowNumber/Type/Capacity) — if one
     of those is found, the missing columns simply default (RowNumber=0,
     Type="", Capacity=0) rather than erroring, with a warning.
@@ -1707,7 +1686,7 @@ def _parse_supermarkets_sheet(
     df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
     df.columns = [str(c).strip() for c in df.columns]
 
-    required = ("Line", "RowNumber", "Type", "Capacity", "Sachnummer", "InitialState", "InitialPcsPartial")
+    required = ("Line", "RowNumber", "Type", "Capacity", "ProductNumber", "InitialState", "InitialPcsPartial")
     missing_cols = [c for c in required if c not in df.columns]
     if missing_cols:
         import warnings
@@ -1727,10 +1706,10 @@ def _parse_supermarkets_sheet(
         slot_type = str(row.get("Type", "")).strip()
         capacity_raw = row.get("Capacity")
 
-        sachnr_raw = row.get("Sachnummer", "")
-        sachnr = "" if pd.isna(sachnr_raw) else str(sachnr_raw).strip()
-        if sachnr.lower() == "nan":
-            sachnr = ""
+        product_number_raw = row.get("ProductNumber", "")
+        product_number = "" if pd.isna(product_number_raw) else str(product_number_raw).strip()
+        if product_number.lower() == "nan":
+            product_number = ""
 
         init_state_raw = row.get("InitialState")
         partial_raw = row.get("InitialPcsPartial")
@@ -1740,7 +1719,7 @@ def _parse_supermarkets_sheet(
             row_number=int(row_number_raw) if pd.notna(row_number_raw) else 0,
             slot_type=slot_type,
             capacity=int(capacity_raw) if pd.notna(capacity_raw) else 0,
-            sachnummer=sachnr,
+            product_number=product_number,
             initial_state=int(init_state_raw) if pd.notna(init_state_raw) else 0,
             initial_pcs_partial=int(partial_raw) if pd.notna(partial_raw) else 0,
         )
@@ -1758,7 +1737,7 @@ def _parse_oee_sheet(xls: pd.ExcelFile) -> dict[str, list[OEEBinConfig]]:
 
     Gracefully no-ops (returns {}) if the sheet is absent, so workbooks
     without it still load fine — this is purely additive, mirroring the
-    Kanban/Supermarkets/Shifts sheets elsewhere in this module. The
+    Pull/Supermarkets/Shifts sheets elsewhere in this module. The
     sampling logic that will actually consume this distribution (e.g.
     drawing a per-line OEE value from its bins) is implemented separately
     as a later step; this parser only reads the raw bin table.
@@ -1845,7 +1824,7 @@ def _parse_shift_time_cell(raw) -> Optional[_dt.time]:
 def _parse_shift_day_cell(raw) -> Optional[_dt.date]:
     """
     Parse one "Day" cell from the Shifts sheet's bottom (availability)
-    table into a real date — needed (unlike CustomerDemand's "Date"
+    table into a real date — needed (unlike PushCustomerDemand's "Date"
     column, which this module deliberately keeps as a raw string; see
     that sheet's parser) because ShiftCalendar does real date arithmetic
     (the Night-shift previous-day lookup, next_on_transition's forward
@@ -1909,7 +1888,7 @@ def _parse_shifts_sheet(xls: pd.ExcelFile) -> ShiftCalendar:
     Returns an empty ShiftCalendar (no shifts, no availability at all) if
     the "Shifts" sheet is absent from the workbook, so older workbooks
     without shift support keep loading exactly as before — mirrors the
-    additive/optional convention used for the Kanban sheets.
+    additive/optional convention used for the Pull sheets.
     Callers that need to distinguish "no shift sheet at all" (shift
     on/off checking is simply not in effect) from "shift sheet present
     but this particular line/day is off" should check `bool(cfg.
@@ -2038,7 +2017,7 @@ def _parse_xlsx_product_master(
     xlsx_path: str | Path,
 ) -> dict[str, int]:
     """
-    Parse product_master.xlsx and return a sachnummer → TTNr mapping.
+    Parse ProductMaster.xlsx and return a product_number → TTNr mapping.
 
     Expected columns (first row is header):
         TTNr | FullName | Prefix | Kunde
@@ -2047,18 +2026,18 @@ def _parse_xlsx_product_master(
     "410 (672 SIS= 4 SKA Teile abgeben)" — the leading integer is extracted
     via regex rather than a bare int() cast to avoid crashes on such rows.
 
-    The FullName column holds the sachnummer (e.g. "F00RC00419").
+    The FullName column holds the product_number (e.g. "F00RC00419").
 
     Returns
     -------
-    dict[sachnummer_str, ttnr_int]
+    dict[product_number_str, ttnr_int]
         e.g. {"F00RC00419": 419, "F00RC00515": 515, ...}
     """
     import re
 
     xlsx_path = Path(xlsx_path)
     if not xlsx_path.exists():
-        raise FileNotFoundError(f"product_master.xlsx not found: {xlsx_path}")
+        raise FileNotFoundError(f"ProductMaster.xlsx not found: {xlsx_path}")
 
     df = pd.read_excel(xlsx_path, header=0)
     df.columns = [str(c).strip() for c in df.columns]
@@ -2068,13 +2047,13 @@ def _parse_xlsx_product_master(
 
     for _, row in df.iterrows():
         raw_ttnr    = row.get("TTNr", "")
-        raw_sachnr  = row.get("FullName", "")
+        raw_product_number  = row.get("FullName", "")
 
-        if pd.isna(raw_ttnr) or pd.isna(raw_sachnr):
+        if pd.isna(raw_ttnr) or pd.isna(raw_product_number):
             continue
 
-        sachnummer = str(raw_sachnr).strip()
-        if not sachnummer or sachnummer.lower() == "nan":
+        product_number = str(raw_product_number).strip()
+        if not product_number or product_number.lower() == "nan":
             continue
 
         # Extract leading integer from TTNr cell (handles dirty values)
@@ -2083,7 +2062,7 @@ def _parse_xlsx_product_master(
             continue
         ttnr = int(m.group(1))
 
-        result[sachnummer] = ttnr
+        result[product_number] = ttnr
 
     return result
 
@@ -2092,7 +2071,7 @@ def _parse_xlsx_setup_times(
     xlsx_path: str | Path,
 ) -> dict[str, dict[int, dict[tuple[int, int], int]]]:
     """
-    Parse HTL_setup_times.xlsx.
+    Parse HTLSetupTimes.xlsx.
 
     The workbook has one sheet per line (HTL3, HTL5, HTL6).
     Each sheet has a header row followed by data rows with five columns:
@@ -2168,7 +2147,7 @@ def _parse_xlsx_setup_times(
         # Loud diagnostics: never again let rows silently disappear.
         if skipped_none or skipped_bad:
             warnings.warn(
-                f"HTL_setup_times.xlsx sheet {sheet_name!r}: parsed {n_parsed}/"
+                f"HTLSetupTimes.xlsx sheet {sheet_name!r}: parsed {n_parsed}/"
                 f"{n_data_rows} data rows. Skipped rows (1-based, incl. header) "
                 f"with missing values: {skipped_none[:20]}"
                 f"{' …' if len(skipped_none) > 20 else ''}; "
@@ -2222,9 +2201,9 @@ def export_setup_times_summary(
 # ===========================================================================
 
 def load_config(
-    excel_path: str | Path = "ProductionPlanning_v6.xlsx",
-    setup_xlsx_path: str | Path = "HTL_setup_times.xlsx",
-    product_master_path: str | Path = "product_master.xlsx",
+    excel_path: str | Path = "ProductionPlanningConfig.xlsx",
+    setup_xlsx_path: str | Path = "HTLSetupTimes.xlsx",
+    product_master_path: str | Path = "ProductMaster.xlsx",
     line_map: dict[int, str] | None = None,
 ) -> SimConfig:
     """
@@ -2234,13 +2213,13 @@ def load_config(
 
     Parameters
     ----------
-    excel_path           : path to ProductionPlanning_v6.xlsx
-    setup_xlsx_path      : path to HTL_setup_times.xlsx (one sheet per line)
-    product_master_path  : path to product_master.xlsx
+    excel_path           : path to ProductionPlanningConfig.xlsx
+    setup_xlsx_path      : path to HTLSetupTimes.xlsx (one sheet per line)
+    product_master_path  : path to ProductMaster.xlsx
                            (columns: TTNr | FullName | Prefix | Kunde)
-                           used to build the sachnummer → TTNr lookup so
+                           used to build the product_number → TTNr lookup so
                            that sim.produce can resolve a product's
-                           sachnummer before indexing into csv_setup_times
+                           product_number before indexing into csv_setup_times
     line_map             : override {int → line_name} mapping
                            (default: {1: "HTL3", 2: "HTL5", 3: "HTL6"})
     """
@@ -2253,43 +2232,43 @@ def load_config(
 
     stations, avail_time = _parse_process_sheet(xls, lmap)
 
-    # Load sachnummer → TTNr map; return empty dict if file is absent so
+    # Load product_number → TTNr map; return empty dict if file is absent so
     # the rest of the simulation can still run (with degraded setup-time lookup).
     product_master_path = Path(product_master_path)
     if product_master_path.exists():
-        sachnummer_to_ttnr = _parse_xlsx_product_master(product_master_path)
+        product_number_to_ttnr = _parse_xlsx_product_master(product_master_path)
     else:
         import warnings
         warnings.warn(
-            f"product_master.xlsx not found at {product_master_path!r}; "
-            "sachnummer_to_ttnr will be empty — setup-time lookup by sachnummer will fail.",
+            f"ProductMaster.xlsx not found at {product_master_path!r}; "
+            "product_number_to_ttnr will be empty — setup-time lookup by product_number will fail.",
             stacklevel=2,
         )
-        sachnummer_to_ttnr = {}
+        product_number_to_ttnr = {}
 
     inventories, chutes = _parse_inventories_sheet(xls)
 
     cfg = SimConfig(
-        n_lines               = len(lmap),
-        line_names            = list(lmap.values()),
-        stations              = stations,
-        buffers               = _parse_buffers_sheet(xls, lmap),
-        inspection            = _parse_inspection_sheet(xls, lmap),
-        packaging             = _parse_packaging_sheet(xls),
-        demand                = _parse_demand_sheet(xls, line_names=list(lmap.values())),
-        initial_setup_state   = _parse_setup_state_sheet(xls, lmap),
-        csv_setup_times       = _parse_xlsx_setup_times(setup_xlsx_path),
-        sachnummer_to_ttnr    = sachnummer_to_ttnr,
-        line_stations         = load_line_stations(excel_path, lmap),
-        available_time_min_day= avail_time,
-        inventories           = inventories,
-        chutes                = chutes,
-        kanban_cards          = (_kanban_cards_parsed := _parse_kanban_cards_sheet(xls)),
-        kanban_withdrawals    = _parse_customer_demand_kanban_sheet(xls, kanban_cards=_kanban_cards_parsed),
-        supermarkets          = _parse_supermarkets_sheet(xls),
-        kanban_timing         = _parse_kanban_config_sheet(xls),
-        shift_calendar        = _parse_shifts_sheet(xls),
-        oee_distribution      = _parse_oee_sheet(xls),
+        n_lines                = len(lmap),
+        line_names             = list(lmap.values()),
+        stations               = stations,
+        buffers                = _parse_buffers_sheet(xls, lmap),
+        inspection             = _parse_inspection_sheet(xls, lmap),
+        packaging              = _parse_packaging_sheet(xls),
+        demand                 = _parse_demand_sheet(xls, line_names=list(lmap.values())),
+        initial_setup_state    = _parse_setup_state_sheet(xls, lmap),
+        csv_setup_times        = _parse_xlsx_setup_times(setup_xlsx_path),
+        product_number_to_ttnr = product_number_to_ttnr,
+        line_stations          = load_line_stations(excel_path, lmap),
+        available_time_min_day = avail_time,
+        inventories            = inventories,
+        chutes                 = chutes,
+        pull_cards             = (_pull_cards_parsed := _parse_pull_cards_sheet(xls)),
+        pull_customer_demand   = _parse_customer_demand_pull_sheet(xls, pull_cards=_pull_cards_parsed),
+        supermarkets           = _parse_supermarkets_sheet(xls),
+        pull_timing_config     = _parse_pull_config_sheet(xls),
+        shift_calendar         = _parse_shifts_sheet(xls),
+        oee_distribution       = _parse_oee_sheet(xls),
     )
 
     _validate(cfg)
@@ -2338,14 +2317,14 @@ def _validate(cfg: SimConfig) -> None:
 # Quick self-test
 # ===========================================================================
 if __name__=="__main__":
-    cfg = load_config("domain/ProductionPlanning_v6.xlsx", "domain/HTL_setup_times.xlsx", "domain/product_master.xlsx")
-    print(len(cfg.kanban_withdrawals))
-    print(cfg.kanban_withdrawals[0] if cfg.kanban_withdrawals else "EMPTY LIST")
+    cfg = load_config("domain/ProductionPlanningConfig.xlsx", "domain/HTLSetupTimes.xlsx", "domain/ProductMaster.xlsx")
+    print(len(cfg.pull_customer_demand))
+    print(cfg.pull_customer_demand[0] if cfg.pull_customer_demand else "EMPTY LIST")
 
 if __name__ == "__main__":
-    excel          = sys.argv[1] if len(sys.argv) > 1 else "domain/ProductionPlanning_v6.xlsx"
-    setup_xlsx     = sys.argv[2] if len(sys.argv) > 2 else "domain/HTL_setup_times.xlsx"
-    product_master = sys.argv[3] if len(sys.argv) > 3 else "domain/product_master.xlsx"
+    excel          = sys.argv[1] if len(sys.argv) > 1 else "domain/ProductionPlanningConfig.xlsx"
+    setup_xlsx     = sys.argv[2] if len(sys.argv) > 2 else "domain/HTLSetupTimes.xlsx"
+    product_master = sys.argv[3] if len(sys.argv) > 3 else "domain/ProductMaster.xlsx"
     cfg            = load_config(excel, setup_xlsx, product_master)
     print(cfg.summary())
 
@@ -2361,9 +2340,9 @@ if __name__ == "__main__":
     # variable viewers cap display at 500 items per container by default).
     export_setup_times_summary(cfg.csv_setup_times)
 
-    print("\n--- sachnummer → TTNr (first 5) ---")
-    for sachnr, ttnr in list(cfg.sachnummer_to_ttnr.items())[:5]:
-        print(f"  {sachnr} → {ttnr}")
+    print("\n--- product_number → TTNr (first 5) ---")
+    for product_number, ttnr in list(cfg.product_number_to_ttnr.items())[:5]:
+        print(f"  {product_number} → {ttnr}")
 
     print("\n--- StationLine catalogue ---")
     for ln, stations in cfg.line_stations.items():
@@ -2379,15 +2358,15 @@ if __name__ == "__main__":
         for ch in lanes:
             print(f"  {ch}")
 
-    print("\n--- Kanban timing ---")
-    print(f"  {cfg.kanban_timing}")
+    print("\n--- Pull timing ---")
+    print(f"  {cfg.pull_timing_config}")
 
-    print(f"\n--- Kanban cards ({len(cfg.kanban_cards)} products, first 5) ---")
-    for sachnr, card in list(cfg.kanban_cards.items())[:5]:
+    print(f"\n--- Pull cards ({len(cfg.pull_cards)} products, first 5) ---")
+    for product_number, card in list(cfg.pull_cards.items())[:5]:
         print(f"  {card}")
 
-    print(f"\n--- Kanban withdrawal events ({len(cfg.kanban_withdrawals)}, first 3) ---")
-    for ev in cfg.kanban_withdrawals[:3]:
+    print(f"\n--- Pull withdrawal events ({len(cfg.pull_customer_demand)}, first 3) ---")
+    for ev in cfg.pull_customer_demand[:3]:
         print(f"  {ev}")
 
     n_slots = sum(len(v) for v in cfg.supermarkets.values())

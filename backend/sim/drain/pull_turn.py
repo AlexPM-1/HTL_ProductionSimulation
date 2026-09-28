@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from sim.context import RunContext
-from sim.produce.run_kanban_batch import run_one_kanban_batch, _make_kanban_order_record
+from sim.produce.run_pull_batch import run_one_pull_batch, _make_pull_order_record
 from sim.fill.pull.cards import _return_card_to_supermarket
 from telemetry.records import ScheduleEvent, GateActivityEntry
 
@@ -44,16 +44,16 @@ def _run_one_pull_card(
     ctx: RunContext,
     line_id: int,
     line_name: str,
-    entry,  # ChuteEntry, sim_class == "pull", n_cards == 1 by construction
+    entry,  # ChuteEntry, production_type == "pull", n_cards == 1 by construction
     n_workers: int,
     event_log: Optional[list[ScheduleEvent]],
     crew_id: int,
 ):
     """
     SimPy generator — run exactly ONE already-popped pull ChuteEntry (one
-    physical KanbanCard) to completion. Builds the order record via
-    sim.produce.run_kanban_batch._make_kanban_order_record(), runs it via
-    run_one_kanban_batch(), and deposits finished pieces back to the
+    physical PullCard) to completion. Builds the order record via
+    sim.produce.run_pull_batch._make_pull_order_record(), runs it via
+    run_one_pull_batch(), and deposits finished pieces back to the
     supermarket via sim.fill.pull.cards._return_card_to_supermarket().
 
     `crew_id` is recorded on the resulting GateActivityEntry — this is
@@ -63,20 +63,19 @@ def _run_one_pull_card(
     Caller (crew_process, via run_pull_turn) already holds
     ctx.gates[line_id] for the duration of this call.
     """
-    kenv = ctx.kenv
-    env = kenv.env
-    rt = ctx
+    menv = ctx.menv
+    env = menv.env
     gate = ctx.gates[line_id]
     product_type, cards = entry.product_type, entry.cards
-    batch_size = cards[0].batch_size
-    quantity = batch_size * len(cards)
+    card_size = cards[0].card_size
+    quantity = card_size * len(cards)
 
-    order_rec = _make_kanban_order_record(rt, line_name, product_type, quantity)
+    order_rec = _make_pull_order_record(ctx, line_name, product_type, quantity)
     if order_rec is None:
         if ctx.verbose:
             print(f"  ⚠ {line_name}: {product_type!r} not feasible here — "
                   f"re-queuing card on the Kanban Chute.")
-        ctx.chutes[line_id].push_batch(product_type, cards)
+        ctx.chutes[line_id].enter_pull_cards(product_type, cards)
         return
 
     for c in cards:
@@ -85,7 +84,7 @@ def _run_one_pull_card(
             c.current_history.t_chute_end = round(env.now, 3)
             c.current_history.t_production_start = round(env.now, 3)
 
-    sm = kenv.supermarket_for(line_id, product_type)
+    sm = menv.supermarket_for(line_id, product_type)
     recycle_queue: list = list(cards)
 
     def on_finish(t: float, status: str, _sm=sm, _rq=recycle_queue,
@@ -93,7 +92,7 @@ def _run_one_pull_card(
         if status != "passed" or _sm is None:
             return
         n_whole = _sm.deposit_finished_pcs(1)
-        rt.record_supermarket(_line_id, _product, "deposit_partial", _sm)
+        ctx.record_supermarket(_line_id, _product, "deposit_partial", _sm)
         for _ in range(n_whole):
             if _rq:
                 card = _rq.pop(0)
@@ -101,20 +100,20 @@ def _run_one_pull_card(
                 # Fallback only — should be rare/never: every piece
                 # produced for this card has a matching card already
                 # reserved in `cards` above.
-                card = kenv.create_card(_product, _line_id, _sm.batch_size, priority="M")
+                card = menv.create_card(_product, _line_id, _sm.card_size, priority="M")
             if ctx.verbose:
                 print(f"  [t={t:10.1f}] {line_name}(L{_line_id}): package of "
-                      f"{_sm.batch_size} × {_product!r} COMPLETED — "
+                      f"{_sm.card_size} × {_product!r} COMPLETED — "
                       f"delivering to Supermarket.")
             env.process(
-                _return_card_to_supermarket(rt, kenv, _sm, card, t, line_name,
+                _return_card_to_supermarket(ctx, menv, _sm, card, t, line_name,
                                              _line_id, ctx.verbose)
             )
 
     t_start = env.now
     possible_changeover = (
         gate.current_rec is None
-        or getattr(gate.current_rec, "sachnummer", None) != order_rec.sachnummer
+        or getattr(gate.current_rec, "product_number", None) != order_rec.product_number
     )
     # Tag events emitted by THIS call as "pull" (filtering by line_id, not
     # just index, since multiple crews can be mid-turn on different
@@ -122,15 +121,15 @@ def _run_one_pull_card(
     # parameter — this is what lets schedule_events.build_gantt_payload's
     # "crewId" on each Gantt job segment actually be populated instead of
     # staying null (see telemetry.records.ScheduleEvent.crew_id).
-    _log = kenv.event_log if event_log is None else event_log
+    _log = menv.event_log if event_log is None else event_log
     _start_idx = len(_log)
-    result = yield from run_one_kanban_batch(
-        kenv, line_id, gate.current_rec, order_rec, n_workers, on_finish, ctx.verbose,
+    result = yield from run_one_pull_batch(
+        menv, line_id, gate.current_rec, order_rec, n_workers, on_finish, ctx.verbose,
         event_log=event_log,
     )
     for _ev in _log[_start_idx:]:
-        if _ev.line_id == line_id and _ev.sim_class is None:
-            _ev.sim_class = "pull"
+        if _ev.line_id == line_id and _ev.production_type is None:
+            _ev.production_type = "pull"
         if _ev.line_id == line_id and _ev.crew_id is None:
             _ev.crew_id = crew_id
     if result is not None:
@@ -140,7 +139,7 @@ def _run_one_pull_card(
     if ctx.gate_activity_log is not None:
         ctx.gate_activity_log.append(GateActivityEntry(
             t_start=t_start, t_end=t_end, line_id=line_id,
-            sachnummer=order_rec.sachnummer, production_type="pull",
+            product_number=order_rec.product_number, production_type="pull",
             crew_id=crew_id,
             possible_changeover=possible_changeover,
             quantity=order_rec.quantity,

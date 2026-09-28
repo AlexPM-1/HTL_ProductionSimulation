@@ -93,11 +93,11 @@ def print_kpi(sim_env: "SimEnvironment", line_id: int, sim_time: float) -> None:
     print(SEP)
 
 
-def build_kpi_by_line(kenv) -> dict:
-    """{line_name: line_kpi_summary(kenv, line_id, kenv.env.now)} for
-    every line in kenv.lines. Called by api/routes_simulate.py's
+def build_kpi_by_line(menv) -> dict:
+    """{line_name: line_kpi_summary(menv, line_id, menv.env.now)} for
+    every line in menv.lines. Called by api/routes_simulate.py's
     simulate_mixed()."""
     return {
-        line.line_name: line_kpi_summary(kenv, line.line_id, kenv.env.now)
-        for line in kenv.lines
+        line.line_name: line_kpi_summary(menv, line.line_id, menv.env.now)
+        for line in menv.lines
     }

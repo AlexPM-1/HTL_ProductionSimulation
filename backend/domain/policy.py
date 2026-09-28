@@ -21,9 +21,9 @@ class PushPolicyConfig:
 
     Card/hour equivalence
     ----------------------
-    One "card" = one push chunk = PUSH_CHUNK_SIZE pieces (200, today) =
+    One "card" = one push card = PUSH_CARD_SIZE pieces (200, today) =
     `card_production_time_min` minutes of line time (30 min, today) — the
-    SAME unit both class-1 Kanban cards and class-2 push chunks are
+    SAME unit both class-1 pull cards and class-2 push cards are
     measured in, which is what lets a frozen zone sized in cards mean the
     same thing to both classes on a shared line queue. See
     frozen_zone_hours for the derived, informational hour figure — the
@@ -37,14 +37,14 @@ class PushPolicyConfig:
                               the front of a line's queue is locked
                               (unreorderable / unremovable) at any given
                               moment. Default 8 (≈ 4h at 30 min/card).
-    card_production_time_min : minutes of line time one card/chunk
+    card_production_time_min : minutes of line time one card
                               represents. Default 30 — used only to
                               derive frozen_zone_hours; NOT the same
                               thing as a station's own cycle time, which
                               can vary by product/line (this is a fixed
                               planning/queueing unit, not a physics
                               measurement).
-    push_visibility_days    : how many days of CustomerDemand push rows
+    push_visibility_days    : how many days of PushCustomerDemand rows
                               are considered "visible" for scheduling at
                               any given moment (a rolling window, not a
                               one-shot read of the whole sheet). Default 3.

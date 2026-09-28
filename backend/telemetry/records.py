@@ -24,7 +24,7 @@ more report builders:
                           OEE-related reports.
   SupermarketOverflowFlag written by sim.fill.push.exotic; read by
                           api/legacy.py's supermarket_overflow_log.
-  PushDeliveryRecord      written wherever a push chunk's delivered_date
+  PushDeliveryRecord      written wherever a push_card's delivered_date
                           is stamped (sim.fill.push); read by
                           reports.push.delivery.
 """
@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 EventType = Literal["setup", "job"]
-SimClass = Literal["pull", "push"]
+ProductionType = Literal["pull", "push"]
 
 
 # ---------------------------------------------------------------------------
@@ -55,8 +55,8 @@ class ScheduleEvent:
     event_type      : "setup" (changeover) or "job" (package produced)
     start_s         : simulation start time, seconds
     end_s           : simulation end time, seconds
-    sachnummer      : product identifier (job events; "from->to" not stored
-                       here — see from_sachnummer/to_sachnummer for setup)
+    product_number      : product identifier (job events; "from->to" not stored
+                       here — see from_product_number/to_product_number for setup)
     kunde           : customer / market designation (job events only)
     product_class   : "Stift" | "DRS" | "Stab_Lochfilter" | etc. (job events)
     package_size    : nominal pieces per package (job events only)
@@ -64,11 +64,11 @@ class ScheduleEvent:
                        (== package_size, except a possible partial final
                        package at the end of an order)
     n_workers       : changeover crew size (setup events only)
-    from_sachnummer : outgoing product (setup events only)
-    to_sachnummer   : incoming product (setup events only)
+    from_product_number : outgoing product (setup events only)
+    to_product_number   : incoming product (setup events only)
     note            : free-text (e.g. setup-time lookup source, or a
                        warning when TTNr data was missing)
-    sim_class       : "pull" (class-1 Kanban) or "push" (class-2), or None
+    production_type : "pull" (class-1 Kanban) or "push" (class-2), or None
                        for callers that don't know/care about the
                        pull-vs-push distinction. Populated AFTER
                        construction by sim.runner.run_mixed, the only
@@ -80,24 +80,34 @@ class ScheduleEvent:
                        or None for callers that don't run the crew-based
                        depletion model at all, or for a "job" segment the
                        caller hasn't back-filled yet. Same post-hoc-
-                       population idiom as sim_class above.
+                       population idiom as production_type above.
+    order_id        : domain.orders.OrderRecord.order_id of the order this
+                       segment was worked on for.
+                       For a "setup" segment this is the INCOMING order's id
+                       is only ever handed incoming_rec's order — 
+                       the outgoing/previous order isn't tracked here. 
+                       For a "job" segment it's whichever
+                       order the caller building that segment set it to.
+                       None for any caller that doesn't have an OrderRecord
+                       to hand (e.g. no order context at all).
     """
     line_name:        str
     line_id:           int
     event_type:        EventType
     start_s:            float
     end_s:              float
-    sachnummer:         Optional[str] = None
+    product_number:         Optional[str] = None
     kunde:              Optional[str] = None
     product_class:      Optional[str] = None
     package_size:       Optional[int] = None
     units_in_segment:   Optional[int] = None
     n_workers:          Optional[int] = None
-    from_sachnummer:    Optional[str] = None
-    to_sachnummer:      Optional[str] = None
+    from_product_number:    Optional[str] = None
+    to_product_number:      Optional[str] = None
     note:               Optional[str] = None
-    sim_class:          Optional[SimClass] = None
+    production_type:    Optional[ProductionType] = None
     crew_id:            Optional[int] = None
+    order_id:           Optional[int] = None
 
     @property
     def duration_s(self) -> float:
@@ -117,17 +127,17 @@ class ScheduleEvent:
         return round(self.units_in_segment / self.duration_h, 1)
 
     def __repr__(self) -> str:
-        tag = f" <{self.sim_class}>" if self.sim_class else ""
+        tag = f" <{self.production_type}>" if self.production_type else ""
         crew_tag = f" crew{self.crew_id}" if self.crew_id is not None else ""
         if self.event_type == "job":
             return (
-                f"ScheduleEvent(job{tag}{crew_tag} {self.sachnummer!r} on {self.line_name} "
+                f"ScheduleEvent(job{tag}{crew_tag} {self.product_number!r} on {self.line_name} "
                 f"[{self.start_s:.1f}, {self.end_s:.1f}]s  "
                 f"{self.units_in_segment}/{self.package_size} pcs  "
                 f"rate={self.throughput_pcs_per_h} pcs/h)"
             )
         return (
-            f"ScheduleEvent(setup{tag}{crew_tag} {self.from_sachnummer!r}->{self.to_sachnummer!r} "
+            f"ScheduleEvent(setup{tag}{crew_tag} {self.from_product_number!r}->{self.to_product_number!r} "
             f"on {self.line_name} [{self.start_s:.1f}, {self.end_s:.1f}]s "
             f"{self.n_workers}MA)"
         )
@@ -169,7 +179,7 @@ class SupermarketSnapshot:
     event_type:     str   # "withdrawal" | "deposit_batch" | "initial"
     n_available:    int
     pcs_partial:    int
-    batch_size:     int
+    card_size:     int
     delta_qty:      Optional[int] = None
     kanban_card_id: Optional[str] = None
 
@@ -210,25 +220,24 @@ class ShortfallEvent:
 class GateActivityEntry:
     """
     One completed hold of a line's LinePriorityGate — i.e. one contiguous
-    interval during which *something* (a pull card or a push chunk,
+    interval during which *something* (a pull card or a push card,
     whichever a crew was running) actually occupied the line's stations,
     start to finish. Appended once per hold, AFTER it ends.
 
-    possible_changeover: True if this entry's sachnummer differs from
+    possible_changeover: True if this entry's product_number differs from
     whatever the gate's current_rec was immediately before this hold
     started (i.e. a changeover() call was very likely made somewhere
     inside this interval). This is a coarse, whole-interval flag, NOT a
     resolved sub-boundary.
 
     production_type : "pull" | "push" — named to match
-        domain.orders.OrderRecord.production_type (renamed from
-        sim_class for consistency; ScheduleEvent.sim_class is unrelated
-        and keeps its own name).
+        domain.orders.OrderRecord.production_type and
+        ScheduleEvent.production_type.
     """
     t_start: float
     t_end: float
     line_id: int
-    sachnummer: str
+    product_number: str
     production_type: str        # "pull" | "push"
     crew_id: Optional[int] = None   # which crew_process(crew_id=...) ran
                                      # this unit; None only for entries
@@ -249,7 +258,7 @@ class ExoticSlotSnapshot:
     covers Main-runner (pull) product groups, never Exotic rows).
 
     `occupants` is the full multi-product breakdown at t — one
-    {"sachnummer", "n_cards"} entry per product simultaneously occupying
+    {"product_number", "n_cards"} entry per product simultaneously occupying
     the row (a row that hasn't fully emptied before a different product
     starts filling it legitimately holds more than one at once).
     `occupant`/`n_cards` are kept alongside it purely for back-compat with
@@ -276,7 +285,7 @@ class PushChuteLogEntry:
     """
     One PUSH-side Chute admission ("deposit") or removal ("drain") event
     — the push-side analogue of ExoticSlotSnapshot, timestamped so a
-    consumer can reconstruct which push chunks were actually sitting in a
+    consumer can reconstruct which push cards were actually sitting in a
     line's shared Chute at any past instant, rather than only ever
     reporting the run's current live total.
 
@@ -288,7 +297,7 @@ class PushChuteLogEntry:
     line: str
     kind: str                          # "deposit" | "drain"
     entry_id: int
-    sachnummer: Optional[str] = None   # populated on deposit only
+    product_number: Optional[str] = None   # populated on deposit only
     rush: bool = False                 # populated on deposit only
 
 
@@ -325,38 +334,38 @@ class SupermarketOverflowFlag:
     """
     t: float
     line: str
-    sachnummer: str
+    product_number: str
     reason: str
 
 
 # ---------------------------------------------------------------------------
-# PushDeliveryRecord — one completed push chunk's delivery outcome.
+# PushDeliveryRecord — one completed push_card's delivery outcome.
 # ---------------------------------------------------------------------------
 
 @dataclass
 class PushDeliveryRecord:
     """
-    One completed push chunk's delivery outcome — the flat, log-friendly
+    One completed push_card's delivery outcome — the flat, log-friendly
     artifact "due date vs. delivered date" KPI graphs and summaries are
-    meant to read, rather than reaching into OrderRecord/chunk internals
-    directly. Appended the same instant chunk.delivered_date is stamped
+    meant to read, rather than reaching into OrderRecord/push_card internals
+    directly. Appended the same instant push_card.delivered_date is stamped
     on the underlying OrderRecord (both places always agree — this is a
     mirror, not a second source of truth).
 
     Attributes
     ----------
-    sachnummer      : product
-    assigned_line   : which line actually produced this chunk
-    quantity        : pieces in this chunk (<= PUSH_CHUNK_SIZE)
-    due_date        : from the originating CustomerDemand row
-    delivered_date  : when this chunk's production finished
+    product_number      : product
+    assigned_line   : which line actually produced this push_card
+    quantity        : pieces in this push_card (<= PUSH_CARD_SIZE)
+    due_date        : from the originating PushCustomerDemand row
+    delivered_date  : when this push_card's production finished
     delivery_delta_h : hours late (positive) or early (negative) —
                        mirrors OrderRecord.delivery_delta_h
-    rush            : True if this chunk was force-placed under the
+    rush            : True if this push_card was force-placed under the
                       rush_threshold_h override rather than normally
                       ranked
     """
-    sachnummer: str
+    product_number: str
     assigned_line: str
     quantity: int
     due_date: Optional[_dt.datetime]

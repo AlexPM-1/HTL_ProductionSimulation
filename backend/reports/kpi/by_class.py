@@ -18,16 +18,16 @@ from domain.config import SimConfig
 
 def build_class_product_sets(cfg: SimConfig) -> tuple[set[str], set[str]]:
     """
-    (kanban_products, push_products) — the sachnummer/product_id sets that
+    (pull_products, push_products) — the product-identifier sets that
     define class-1 vs class-2 for KPI bucketing.
 
-    kanban_products: { evt.product for evt in cfg.kanban_withdrawals } —
-    the CustomerDemandKanban sheet is a flat long table, one
-    KanbanWithdrawalEvent per withdrawal row (Date | Time | Product |
+    pull_products: { evt.product for evt in cfg.pull_customer_demand } —
+    the PullCustomerDemand sheet is a flat long table, one
+    PullCustomerDemand row per withdrawal row (Date | Time | Product |
     TotalQuantity | LineId). Only rows with quantity > 0 are kept upstream,
     so every event.product seen here is a real class-1 product.
 
-    push_products: { d.product_id for d in cfg.demand } (CustomerDemand
+    push_products: { d.product_id for d in cfg.demand } (PushCustomerDemand
     rows — one row per (Date, Product)).
 
     Per the spec these two sets should be disjoint (a product runs as
@@ -35,28 +35,28 @@ def build_class_product_sets(cfg: SimConfig) -> tuple[set[str], set[str]]:
     hand — callers should not assume disjointness; this function does not
     enforce or silently fix an overlap, it just returns what's there.
     """
-    kanban_products: set[str] = {
-        evt.product for evt in (getattr(cfg, "kanban_withdrawals", []) or [])
+    pull_products: set[str] = {
+        evt.product for evt in (getattr(cfg, "pull_customer_demand", []) or [])
     }
 
     push_products: set[str] = {
         d.product_id for d in (getattr(cfg, "demand", []) or [])
     }
-    return kanban_products, push_products
+    return pull_products, push_products
 
 
 def class_split_kpi(
-    kenv, line, kanban_products: set[str], push_products: set[str],
+    menv, line, pull_products: set[str], push_products: set[str],
 ) -> dict:
     """
     Per-line pull vs push KPI bucket, computed by filtering
-    kenv.parts_out (already restricted to this line) on product_type
+    menv.parts_out (already restricted to this line) on product_type
     membership. Mirrors the passed/scrapped/reworked/mean_cycle_time_s
     fields of reports.kpi.by_line.line_kpi_summary() but does NOT
     duplicate station_utilisation / buffer_max_fill / total_created —
     those are combined-only (see reports/kpi/by_line.py).
     """
-    parts_out = [p for p in kenv.parts_out if p.line_id == line.line_id]
+    parts_out = [p for p in menv.parts_out if p.line_id == line.line_id]
 
     def _bucket(products: set[str]) -> dict:
         subset = [p for p in parts_out if p.product_type in products]
@@ -75,11 +75,11 @@ def class_split_kpi(
 
     unclassified = [
         p for p in parts_out
-        if p.product_type not in kanban_products and p.product_type not in push_products
+        if p.product_type not in pull_products and p.product_type not in push_products
     ]
 
     return {
-        "pull": _bucket(kanban_products),
+        "pull": _bucket(pull_products),
         "push": _bucket(push_products),
         "unclassified_count": len(unclassified),  # flags sheet overlap/gaps, see docstring above
     }
@@ -95,9 +95,9 @@ def class_filter_products(cfg: SimConfig, cls: Optional[str]) -> Optional[set[st
     """
     if cls is None or cls == "all":
         return None
-    kanban_products, push_products = build_class_product_sets(cfg)
+    pull_products, push_products = build_class_product_sets(cfg)
     if cls == "pull":
-        return kanban_products
+        return pull_products
     if cls == "push":
         return push_products
     raise ValueError("cls must be one of: pull, push, all")

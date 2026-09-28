@@ -6,7 +6,7 @@ build_shortfall_payload(). Kept separate from
 reports/pull/card_flow.build_card_flow_payload() so each report module
 stays single-purpose; callers that need both call both functions and
 merge the results (see api/legacy.py, api/routes_simulate.py,
-reports/serialization.py's dump_kanban_events_json).
+reports/serialization.py's dump_pull_events_json).
 
 Reads telemetry.records.ShortfallEvent (t, line_id, product_type,
 start_s, end_s).
@@ -36,7 +36,7 @@ def build_shortfall_payload(
     """
     Per-line, per-bin count of withdrawal requests that were
     open-and-unmet ("customer asked, supermarket had 0") at that
-    instant, broken down per product (sachnummer), plus a "total" key —
+    instant, broken down per product (product_number), plus a "total" key —
     the same n_bins+1-point time grid and point shape
     (line_units_series' packages_series/restmenge_series style:
     {t, <product>: n, ..., total: n}) as
@@ -47,12 +47,12 @@ def build_shortfall_payload(
 
     line_ids: the set of line_ids known to the run (pass the same
     line_ids reports.pull.card_flow.build_card_flow_payload() derived,
-    e.g. kenv.card_registry's line_id set, or all kenv.lines ids) — used
+    e.g. menv.card_registry's line_id set, or all menv.lines ids) — used
     so a line with zero shortfall events still gets an all-zero series
     entry rather than being silently absent.
 
-    sim_time_s: pass kenv.env.now (same convention build_card_flow_payload
-    uses) — taken as a plain float rather than kenv itself, so this
+    sim_time_s: pass menv.env.now (same convention build_card_flow_payload
+    uses) — taken as a plain float rather than menv itself, so this
     function stays a pure reducer over shortfall_log like
     reports.all.supermarket_series.build_line_units_timeseries.
 

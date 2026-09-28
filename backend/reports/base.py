@@ -13,10 +13,10 @@ Usage
     from reports.base import register
 
     @register("gantt", tags=("all",))
-    def build_gantt_report(kenv, cfg, **kwargs) -> dict:
+    def build_gantt_report(menv, cfg, **kwargs) -> dict:
         ...
 
-Every registered builder must accept (kenv, cfg, **kwargs) and return a
+Every registered builder must accept (menv, cfg, **kwargs) and return a
 JSON-serialisable dict — the same calling convention every report builder
 in this package already follows, so existing call sites (api/legacy.py,
 api/routes_movement.py) can keep calling the underlying function directly

@@ -16,7 +16,7 @@ from sim.resources.supermarket import SupermarketResource
 
 
 def build_supermarket_state_lookup(
-    rt: RunContext,
+    ctx: RunContext,
     product_type: str,
 ) -> dict[int, tuple[str, SupermarketResource]]:
     """
@@ -26,39 +26,39 @@ def build_supermarket_state_lookup(
     by. Deliberately not cached: stock changes on every
     withdrawal/deposit, so this is rebuilt fresh on every call.
 
-    Only lines listed in this product's KanbanCardsSetup.eligible_lines
-    (cfg.kanban_cards) AND that actually got a Supermarket resource
+    Only lines listed in this product's PullCardsSetup.eligible_lines
+    (cfg.pull_cards) AND that actually got a Supermarket resource
     built for it are included (falls back to every known line if the
-    product has no KanbanCardsSetup row at all).
+    product has no PullCardsSetup row at all).
 
     Multi-row note (Supermarkets sheet / SupermarketSlotConfig): a line
     can have several physical slot ROWS for the same product (e.g. HTL3
     rows 1 & 2 both F00RJ02491 — "these are separate physical lanes...
     therefore it must be added", per the assignment rule).
-    build_kanban_environment() (sim.resources.build) is the layer
-    responsible for folding every row of a given (line, sachnummer) into
+    build_mixed_environment() (sim.resources.build) is the layer
+    responsible for folding every row of a given (line, product_number) into
     ONE combined SupermarketResource at construction time (summed
     Capacity + summed InitialState/InitialPcsPartial across rows) — a
     build-time concern, not a per-withdrawal one — so that by the time
-    this function runs, `kenv.supermarket_for(line_id, product_type)`
+    this function runs, `menv.supermarket_for(line_id, product_type)`
     already reflects that line's TRUE total stock. This function itself
     only aggregates ACROSS LINES on top of that.
 
     Returns {line_id: (line_name, SupermarketResource)}.
     """
-    kenv = rt.kenv
-    card_cfg = kenv.cfg.kanban_cards.get(product_type)
+    menv = ctx.menv
+    card_cfg = menv.cfg.pull_cards.get(product_type)
     eligible_lines = (
         card_cfg.eligible_lines if card_cfg and card_cfg.eligible_lines
-        else list(rt.line_name_to_id.keys())
+        else list(ctx.line_name_to_id.keys())
     )
 
     lookup: dict[int, tuple[str, SupermarketResource]] = {}
     for line_name in eligible_lines:
-        line_id = rt.line_name_to_id.get(line_name)
+        line_id = ctx.line_name_to_id.get(line_name)
         if line_id is None:
             continue
-        sm = kenv.supermarket_for(line_id, product_type)
+        sm = menv.supermarket_for(line_id, product_type)
         if sm is None:
             continue
         lookup[line_id] = (line_name, sm)
@@ -67,7 +67,7 @@ def build_supermarket_state_lookup(
 
 
 def select_supermarket_for_withdrawal(
-    rt: RunContext,
+    ctx: RunContext,
     product_type: str,
 ) -> tuple[Optional[int], Optional[SupermarketResource]]:
     """
@@ -104,7 +104,7 @@ def select_supermarket_for_withdrawal(
     Returns (line_id, SupermarketResource), or (None, None) if
     `product_type` has no configured Supermarket anywhere.
     """
-    lookup = build_supermarket_state_lookup(rt, product_type)
+    lookup = build_supermarket_state_lookup(ctx, product_type)
     if not lookup:
         return None, None
 

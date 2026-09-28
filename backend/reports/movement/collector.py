@@ -21,11 +21,11 @@ def build_batch_collector_rows(
     static layout drew slots for is flagged, not silently lost.
     """
     bc_rows_out = []
-    for sachnr, trig in sorted(products_by_line.get(lid, [])):
-        cards = frame.get((lid, "in_batch_collector", sachnr), [])
+    for product_number, trig in sorted(products_by_line.get(lid, [])):
+        cards = frame.get((lid, "in_batch_collector", product_number), [])
         capacity = trig + _BC_CAPACITY_SLACK
         bc_rows_out.append({
-            "product_type": sachnr,
+            "product_type": product_number,
             "trigger_amount": trig,
             "capacity": capacity,
             "card_ids": [c["card_id"] for c in cards[:capacity]],

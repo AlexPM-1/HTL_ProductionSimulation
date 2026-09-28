@@ -8,8 +8,8 @@ No report builder is registered here yet: every existing builder (used
 directly by api/routes_movement.py and api/legacy.py) has its own bespoke
 call signature (some take n_bins=..., some take line_id=..., some take
 t_s=...), while reports.base's registry expects a uniform
-(kenv, cfg, **kwargs) -> dict call. To register a builder here, add a
-small (kenv, cfg, **kwargs) -> ... wrapper around it via
+(menv, cfg, **kwargs) -> dict call. To register a builder here, add a
+small (menv, cfg, **kwargs) -> ... wrapper around it via
 reports.base.register(), rather than reshaping the builder itself.
 """
 
@@ -34,5 +34,5 @@ def get_report(report_id: str, **kwargs):
     entry = get(report_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No such report: {report_id!r}")
-    kenv, cfg = run_store.require()
-    return entry.fn(kenv, cfg, **kwargs)
+    menv, cfg = run_store.require()
+    return entry.fn(menv, cfg, **kwargs)

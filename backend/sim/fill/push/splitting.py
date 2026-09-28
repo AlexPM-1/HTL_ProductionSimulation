@@ -1,10 +1,10 @@
 """
-sim/fill/push/chunking.py
+sim/fill/push/splitting.py
 ===========================
-build_push_order_record() and split_into_chunks() — both called by
-sim.fill.push.dispatch.push_dispatch_process(). split_into_chunks() is
+build_push_order_record() and split_into_push_cards() — both called by
+sim.fill.push.dispatch.push_dispatch_process(). split_into_push_cards() is
 pure data slicing (no chute/env side effects); dispatch.py does its own
-enqueueing (push_rush_entry/push_chunk + chute_tracker.deposit) over
+enqueueing (push_rush_entry/enter_push_cards + chute_tracker.deposit) over
 the list it returns.
 """
 
@@ -20,7 +20,7 @@ from sim.resources.environment import SimEnvironment
 
 
 def build_push_order_record(
-    kenv: SimEnvironment,
+    menv: SimEnvironment,
     row,
     info: ProductLineInfo,
     assigned_line: str,
@@ -28,22 +28,22 @@ def build_push_order_record(
     note: Optional[str] = None,
 ) -> OrderRecord:
     """
-    Resolve one CustomerDemand row + its chosen production line into a
+    Resolve one PushCustomerDemand row + its chosen production line into a
     full OrderRecordPush — due_date populated straight from the row's
     own (Date, Time); delivered_date stays None until run_push_turn()
-    (sim/drain/push_turn.py) sets it on the specific chunk that
+    (sim/drain/push_turn.py) sets it on the specific push card that
     actually finishes.
 
-    Created via kenv.create_order(kind="push", ...) (rather than
+    Created via menv.create_order(kind="push", ...) (rather than
     constructing OrderRecord directly) so order_id comes from the one
     shared push/pull counter and the result is registered in
-    kenv.order_registry — see SimEnvironment.create_order().
+    menv.order_registry — see SimEnvironment.create_order().
     """
     lc = info.lines[assigned_line]
-    return kenv.create_order(
+    return menv.create_order(
         kind="push",
         period_label=row.period_label,
-        sachnummer=row.product_id,
+        product_number=row.product_id,
         kunde=info.kunde,
         product_class=getattr(info.product_class, "name", str(info.product_class)),
         quantity=row.total_qty,
@@ -61,22 +61,22 @@ def build_push_order_record(
 _build_push_order_record = build_push_order_record
 
 
-def split_into_chunks(order: OrderRecord, chunk_size: int) -> list[OrderRecord]:
+def split_into_push_cards(order: OrderRecord, push_card_size: int) -> list[OrderRecord]:
     """
     Split `order.quantity` into consecutive OrderRecord copies of at
-    most `chunk_size` pieces each (`dataclasses.replace(order,
-    quantity=qty)` per chunk). Every chunk carries the SAME order_id as
+    most `push_card_size` pieces each (`dataclasses.replace(order,
+    quantity=qty)` per push card). Every push card carries the SAME order_id as
     `order` (dataclasses.replace() only overrides `quantity` here, so
     order_id — and every other field, including the shared
     `assignments` list object — passes through unchanged). Pure: no
     chute / chute_tracker / env side effects — the caller
     (push_dispatch_process) is responsible for actually enqueueing each
-    returned chunk.
+    returned push card.
     """
-    chunks: list[OrderRecord] = []
+    push_cards: list[OrderRecord] = []
     remaining = order.quantity
     while remaining > 0:
-        qty = min(chunk_size, remaining)
-        chunks.append(_dc_replace(order, quantity=qty))
+        qty = min(push_card_size, remaining)
+        push_cards.append(_dc_replace(order, quantity=qty))
         remaining -= qty
-    return chunks
+    return push_cards

@@ -1,10 +1,10 @@
 """
 sim/resources/inventory.py
 ===========================
-InventoryResource (slow, virtually-unbounded stores) and ChuteResource
+InventoryResource (slow, virtually-unbounded stores) and MaterialChuteResource
 (the MATERIAL FIFO chute immediately upstream of a station — unrelated
-to KanbanChuteResource in sim/resources/chute.py despite the shared
-"Chute" name; see that module's naming note).
+to ChuteResource in sim/resources/chute.py despite both being chutes;
+see that module's naming note).
 
 Built by sim.resources.build.build_environment(); drawn from by
 sim.produce.part_lifecycle._draw_from_chute().
@@ -17,7 +17,7 @@ from typing import Optional
 
 import simpy
 
-from domain.config import InventoryConfig, ChuteConfig
+from domain.config import InventoryConfig, MaterialChuteConfig
 
 
 # ===========================================================================
@@ -142,12 +142,12 @@ class InventoryResource:
 
 
 @dataclass
-class ChuteResource:
+class MaterialChuteResource:
     """
     Wraps a SimPy Container for ONE lane of ONE FIFO chute (one row of
     the "Inventories" sheet with Type == "FIFO_Chute") — e.g.
     Chu_vor_HTL3 has three lanes: Standard, Lochfilter, DRS, each its
-    own ChuteResource with its own container.
+    own MaterialChuteResource with its own container.
 
     A chute is a small, pull-triggered buffer directly upstream of a
     station — NOT a kanban supermarket with a continuous arrival process.
@@ -160,12 +160,11 @@ class ChuteResource:
     Withdrawal FROM the chute is driven by the consuming station's own
     throughput (its cycle time), not by any external arrival distribution.
 
-    NOT the same thing as KanbanChuteResource (sim/resources/chute.py's
-    priority-ordered card admission queue) despite the shared "Chute"
-    name — this one is the material FIFO chute; see that module's
-    naming note.
+    NOT the same thing as ChuteResource (sim/resources/chute.py's
+    priority-ordered card admission queue) despite both being chutes —
+    this one is the material FIFO chute; see that module's naming note.
     """
-    chute_cfg:            ChuteConfig
+    chute_cfg:            MaterialChuteConfig
     container:             simpy.Container
     upstream_inventory:    Optional[InventoryResource]   # resolved at build time
     refill_lock:           simpy.Resource                # capacity=1 — serializes
@@ -244,7 +243,7 @@ class ChuteResource:
 
     def __repr__(self) -> str:
         return (
-            f"ChuteResource(name={self.name}, lane={self.stored_type}, "
+            f"MaterialChuteResource(name={self.name}, lane={self.stored_type}, "
             f"fill={self.current_fill}/{self.capacity}, "
             f"trigger_left={self.trigger_amount_left}, "
             f"replenish={self.replenish_amount}pk({self.replenish_qty_pcs}pcs))"

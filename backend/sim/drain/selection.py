@@ -21,13 +21,13 @@ def select_line_for_crew(
     selection.
 
     Eligible lines: on-shift right now, with pending work
-    (KanbanChuteResource.total_pending_cards > 0), and — unless it's the
+    (ChuteResource.total_pending_cards > 0), and — unless it's the
     line we already hold — not currently locked by another crew
     (gate.resource.count == 0).
 
     Tie-breaking:
       - Among FRESH candidates (held_line_id=None), the max-load line
-        wins; ties fall to iteration order (kenv.lines' own order, i.e.
+        wins; ties fall to iteration order (menv.lines' own order, i.e.
         lowest line_id) — not specified by the spec beyond the
         crew-vs-crew timing case below, so this is a reasonable default.
       - When RE-EVALUATING a line already held, Rule 2's "equal amount
@@ -46,7 +46,7 @@ def select_line_for_crew(
     exactly as specified, with no extra bookkeeping needed here.
     """
     loads: dict[int, int] = {}
-    for line in ctx.kenv.lines:
+    for line in ctx.menv.lines:
         lid = line.line_id
         if not ctx.is_line_on(line.line_name):
             continue

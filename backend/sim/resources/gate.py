@@ -13,7 +13,7 @@ from typing import Optional
 
 import simpy
 
-from domain.orders import KanbanBatchSpec, OrderRecord
+from domain.orders import PullBatchSpec, OrderRecord
 
 
 @dataclass
@@ -39,15 +39,15 @@ class LinePriorityGate:
         running a push or pull turn — see sim.drain.push_turn.run_push_turn
         / sim.drain.pull_turn._run_one_pull_card. On the push side this is
         a real, customer-tracked OrderRecordPush; on the pull side it's
-        the internal KanbanBatchSpec (see that class's docstring for why
+        the internal PullBatchSpec (see that class's docstring for why
         it isn't an OrderRecord). Every reader of this field (changeover,
         api/legacy.py's gate_status, pull_turn's changeover-detection)
-        only ever duck-types off `.sachnummer` / `getattr(...)`, so both
+        only ever duck-types off `.product_number` / `getattr(...)`, so both
         types are interchangeable in practice.
     """
     resource: simpy.Resource
     last_activity_t: float = 0.0
-    current_rec: Optional["OrderRecord | KanbanBatchSpec"] = None
+    current_rec: Optional["OrderRecord | PullBatchSpec"] = None
 
     def touch(self, t: float) -> None:
         self.last_activity_t = t

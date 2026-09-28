@@ -5,7 +5,7 @@ build_movement_state_payload() — the per-instant, per-line assembly loop
 for the Movement Simulation page, composing the box builders in this
 package (reports/movement/supermarket.py, collector.py, collection_box.py,
 chute.py, status.py, transit.py) plus
-reports/movement/layout.active_kanban_products_by_line() and
+reports/movement/layout.active_pull_products_by_line() and
 reports/movement/trace.build_movement_frame_cards().
 
 _MAX_MOVEMENT_FRAMES is the frame-count cap for this assembler, read by
@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Optional
 
 from domain.config import SimConfig
-from reports.movement.layout import active_kanban_products_by_line
+from reports.movement.layout import active_pull_products_by_line
 from reports.movement.trace import build_movement_frame_cards
 from reports.movement.supermarket import build_supermarket_rows
 from reports.movement.collector import build_batch_collector_rows
@@ -30,7 +30,7 @@ _MAX_MOVEMENT_FRAMES = 1000  # cap on GET /api/mixed/movement_state's frame coun
 
 
 def build_movement_state_payload(
-    kenv, cfg: SimConfig, t_s: float, line_id: Optional[int] = None, include_push: bool = False,
+    menv, cfg: SimConfig, t_s: float, line_id: Optional[int] = None, include_push: bool = False,
 ) -> list[dict]:
     """
     Per-card occupancy snapshot at raw sim-clock time t_s, resolved down to
@@ -47,7 +47,7 @@ def build_movement_state_payload(
 
     include_push: for the "All Production" movement view (both push and
     pull traffic, not just Kanban cards). Push-produced pieces never get
-    a KanbanCard, so they can't be resolved to card_ids the way Kanban
+    a PullCard, so they can't be resolved to card_ids the way Kanban
     cards are — instead, when True: Exotic Supermarket rows are ADDED
     (see reports.movement.supermarket), and the Chute's "entries" list
     interleaves real push entries alongside pull cards (see
@@ -59,45 +59,45 @@ def build_movement_state_payload(
     frozen_zone_cards reading the run's CURRENT live value, "in_transit"
     covering only states with no Step-1 box of their own).
     """
-    frame = build_movement_frame_cards(kenv, t_s, line_id=line_id)
+    frame = build_movement_frame_cards(menv, t_s, line_id=line_id)
 
-    active_products = active_kanban_products_by_line(kenv)
+    active_products = active_pull_products_by_line(menv)
     products_by_line: dict[int, list[tuple[str, int]]] = {}
-    for sachnr, card_cfg in (cfg.kanban_cards or {}).items():
+    for product_number, card_cfg in (cfg.pull_cards or {}).items():
         eligible = getattr(card_cfg, "eligible_lines", None)
-        for line in kenv.lines:
+        for line in menv.lines:
             if eligible and line.line_name not in eligible:
                 continue
-            if sachnr not in active_products.get(line.line_id, set()):
+            if product_number not in active_products.get(line.line_id, set()):
                 continue
             products_by_line.setdefault(line.line_id, []).append(
-                (sachnr, card_cfg.cards_to_trigger)
+                (product_number, card_cfg.cards_to_trigger)
             )
 
     lines_out = []
-    for line in kenv.lines:
+    for line in menv.lines:
         lid = line.line_id
         if line_id is not None and lid != line_id:
             continue
         line_name = line.line_name
 
         sm_rows_out, restmenge_out, _main_runner_groups = build_supermarket_rows(
-            frame, kenv, cfg, lid, line_name, t_s, include_push,
+            frame, menv, cfg, lid, line_name, t_s, include_push,
         )
         bc_rows_out = build_batch_collector_rows(frame, lid, products_by_line)
         collection_box = build_collection_box(frame, lid)
-        chute_box = build_chute_box(kenv, lid, line_name, t_s, include_push)
+        chute_box = build_chute_box(menv, lid, line_name, t_s, include_push)
 
         # ---- Production status: what the line's gate is doing right now ----
         # Time-indexed (via GateActivityEntry replay), NOT the live-only
-        # kenv.gates[lid].current_rec the /simulate_mixed gate_status field
+        # menv.gates[lid].current_rec the /simulate_mixed gate_status field
         # uses. shift_calendar/line_name/epoch are passed so an off-shift
         # line is reported distinctly from a genuinely idle one (v6) —
         # getattr'd defensively so this keeps working unchanged against a
-        # kenv from a run that predates push_ctx/shift_calendar ever
+        # menv from a run that predates push_ctx/shift_calendar ever
         # being set.
-        gate_log = getattr(kenv, "gate_activity_log", None) or []
-        push_ctx = getattr(kenv, "push_ctx", None)
+        gate_log = getattr(menv, "gate_activity_log", None) or []
+        push_ctx = getattr(menv, "push_ctx", None)
         production_status = production_status_at(
             gate_log, lid, t_s,
             shift_calendar=cfg.shift_calendar,

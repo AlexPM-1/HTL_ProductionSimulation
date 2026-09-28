@@ -6,7 +6,7 @@ policy via api.runs.run_store.
 
 PushPolicyConfig lives in domain.policy. apply_push_policy (imported from
 sim.runner) is the sim-side wiring that re-syncs frozen_zone_cards onto
-every live KanbanChuteResource whenever the policy changes.
+every live ChuteResource whenever the policy changes.
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ def get_push_policy():
     PushPolicyConfig()'s bare defaults ("live": false), purely so a
     settings panel has sensible starting values before the first run.
     """
-    kenv = run_store.kenv
-    if kenv is not None and getattr(kenv, "push_policy", None) is not None:
-        policy = kenv.push_policy
+    menv = run_store.menv
+    if menv is not None and getattr(menv, "push_policy", None) is not None:
+        policy = menv.push_policy
         live = True
     else:
         policy = PushPolicyConfig()
@@ -61,8 +61,8 @@ def patch_push_policy(req: PushPolicyPatchRequest):
     function's docstring for exactly what's live-immediately vs. applies
     only to new orders.
     """
-    kenv, _cfg_unused = run_store.require()
-    ctx = getattr(kenv, "push_ctx", None)
+    menv, _cfg_unused = run_store.require()
+    ctx = getattr(menv, "push_ctx", None)
     if ctx is None:
         raise HTTPException(
             status_code=409,
@@ -78,7 +78,7 @@ def patch_push_policy(req: PushPolicyPatchRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
     apply_push_policy(ctx, new_policy)
-    kenv.push_policy = ctx.policy  # keep the kenv-level mirror in sync, same spot run_mixed() sets it
+    menv.push_policy = ctx.policy  # keep the menv-level mirror in sync, same spot run_mixed() sets it
 
     d = ctx.policy.to_dict()
     d["frozen_zone_hours"] = ctx.policy.frozen_zone_hours

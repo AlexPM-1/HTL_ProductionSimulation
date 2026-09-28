@@ -62,8 +62,8 @@ def crew_process(
     cannot be used" applies to STARTING work, not to finishing what's
     already running.
     """
-    kenv = ctx.kenv
-    env = kenv.env
+    menv = ctx.menv
+    env = menv.env
 
     while True:
         line_id = select_line_for_crew(ctx, held_line_id=None)
@@ -75,7 +75,7 @@ def crew_process(
         with gate.resource.request() as req:
             yield req
             while True:
-                line_name = next(l.line_name for l in kenv.lines if l.line_id == line_id)
+                line_name = next(l.line_name for l in menv.lines if l.line_id == line_id)
 
                 while not ctx.is_line_on(line_name):
                     wait_s = ctx.seconds_until_on(line_name)

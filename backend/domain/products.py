@@ -33,7 +33,7 @@ HTL5_Freigabe | HTL5_Prio | HTL6_Freigabe | HTL6_Prio
 Usage
 -----
     from domain.products import lookup, PRODUCT_MATRIX
-    info = lookup("0001234567")          # by product_id
+    info = lookup("0001234567")          # by product_number
     info = lookup("BOSCH-CLIENT")        # by Kunde name
 
     # Check which lines can produce this part
@@ -313,7 +313,7 @@ class ProductLineInfo:
 
     Attributes
     ----------
-    product_id      : Bosch part number (primary key for lookup)
+    product_number  : Bosch part number (primary key for lookup)
     kunde           : customer name / market designation
     hd              : HD (Hochdruck) designation or variant label
     product_class   : product family (determines optional stations)
@@ -321,7 +321,7 @@ class ProductLineInfo:
                       Only lines with Freigabe != NICHT_MOEGLICH by default,
                       but NICHT_MOEGLICH lines are also stored for completeness.
     """
-    product_id: str
+    product_number: str
     kunde: str
     product_class: ProductClass
     lines: dict[str, LineClass]             # "HTL3" | "HTL5" | "HTL6" → LineClass
@@ -332,7 +332,7 @@ class ProductLineInfo:
 
     def describe(self) -> None:
         print(
-            f"\nProduct: {self.product_id}  |  Kunde: {self.kunde}  "
+            f"\nProduct: {self.product_number}  |  Kunde: {self.kunde}  "
             f"|  HD: {self.hd}  "
             f"|  Class: {self.product_class.value}"
         )
@@ -434,7 +434,7 @@ def load_matrix_from_excel(
         if row[col_index["ProductNumber"]] is None:
             continue  # skip blank trailing rows
 
-        product_id = str(row[col_index["ProductNumber"]]).strip()
+        product_number = str(row[col_index["ProductNumber"]]).strip()
         kunde = row[col_index["Kunde"]]
         pc = ProductClass[str(row[col_index["Type"]]).strip()]
 
@@ -446,8 +446,8 @@ def load_matrix_from_excel(
 
             lines[line_name] = _make_line_class(line_name, freigabe, pc, prio)
 
-        matrix[product_id] = ProductLineInfo(
-            product_id=product_id,
+        matrix[product_number] = ProductLineInfo(
+            product_number=product_number,
             kunde=kunde,
             product_class=pc,
             lines=lines,
@@ -463,9 +463,9 @@ def load_matrix_from_excel(
 
 def lookup(identifier: str) -> ProductLineInfo:
     """
-    Find a product by Product_id, Kunde name.
+    Find a product by Product_number, Kunde name.
 
-    Search order: product_id → kunde
+    Search order: product_number → kunde
     Raises ValueError if not found.
 
     Parameters
@@ -478,7 +478,7 @@ def lookup(identifier: str) -> ProductLineInfo:
     """
     identifier = identifier.strip()
 
-    # 1. Direct product_id match
+    # 1. Direct product_number match
     if identifier in PRODUCT_MATRIX:
         return PRODUCT_MATRIX[identifier]
 
@@ -489,7 +489,7 @@ def lookup(identifier: str) -> ProductLineInfo:
 
     raise ValueError(
         f"Product not found for identifier: {identifier!r}. "
-        f"Known product_idn: {list(PRODUCT_MATRIX.keys())}"
+        f"Known product_numbers: {list(PRODUCT_MATRIX.keys())}"
     )
 
 
@@ -526,7 +526,7 @@ if __name__ == "__main__":
     print(f"  Count: {len(htl3_products)}")
     for p in htl3_products:
         lc = p.lines["HTL3"]
-        print(f"    {p.product_id} ({p.product_class.value}) → {lc.freigabe.value}")
+        print(f"    {p.product_number} ({p.product_class.value}) → {lc.freigabe.value}")
 
 
     print("\n--- All feasible products for HTL5 ---")
@@ -535,7 +535,7 @@ if __name__ == "__main__":
     print(f"  Count: {len(htl5_products)}")
     for p in htl5_products:
         lc = p.lines["HTL5"]
-        print(f"    {p.product_id} ({p.product_class.value}) → {lc.freigabe.value}")
+        print(f"    {p.product_number} ({p.product_class.value}) → {lc.freigabe.value}")
 
 
     print("\n--- All feasible products for HTL6 ---")
@@ -544,4 +544,4 @@ if __name__ == "__main__":
     print(f"  Count: {len(htl6_products)}")
     for p in htl6_products:
         lc = p.lines["HTL6"]
-        print(f"    {p.product_id} ({p.product_class.value}) → {lc.freigabe.value}")
+        print(f"    {p.product_number} ({p.product_class.value}) → {lc.freigabe.value}")

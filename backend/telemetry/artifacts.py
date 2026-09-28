@@ -5,17 +5,17 @@ RunArtifacts: a typed container gathering every log a mixed run produces
 (event_log, snapshot_log, daily_log, shortfall_log, gate_activity_log,
 exotic_snapshot_log, push_chute_log, oee_draw_log,
 supermarket_overflow_log, push_delivery_log) into one object, instead of
-each living as a separate loose attribute on kenv.
+each living as a separate loose attribute on menv.
 
 Two ways to use it:
   - Construct empty at the start of a run and hand its lists to whatever
     populates them (telemetry.recorder.Recorder, telemetry.packaging
     .PackageTracker, the various sim.fill trackers) — a caller-owned-list
     pattern, gathered in one place instead of scattered variables.
-  - `RunArtifacts.from_kenv(kenv)` after a run, to pull the same logs
-    back off a kenv whose attributes were populated directly, for call
+  - `RunArtifacts.from_menv(menv)` after a run, to pull the same logs
+    back off a menv whose attributes were populated directly, for call
     sites not yet migrated to constructing RunArtifacts up front. This is
-    the "adapter over kenv" role.
+    the "adapter over menv" role.
 """
 
 from __future__ import annotations
@@ -49,19 +49,19 @@ class RunArtifacts:
     push_delivery_log: list[PushDeliveryRecord] = field(default_factory=list)
 
     @classmethod
-    def from_kenv(cls, kenv) -> "RunArtifacts":
-        """Pull the same logs back off a kenv built the old
+    def from_menv(cls, menv) -> "RunArtifacts":
+        """Pull the same logs back off a menv built the old
         attribute-bolting way — for call sites not yet migrated to
         constructing RunArtifacts up front and handing its lists in."""
         return cls(
-            event_log=getattr(kenv, "event_log", None) or [],
-            snapshot_log=getattr(kenv, "snapshot_log", None) or [],
-            shortfall_log=getattr(kenv, "shortfall_log", None) or [],
-            daily_log=getattr(kenv, "daily_log", None) or [],
-            gate_activity_log=getattr(kenv, "gate_activity_log", None) or [],
-            exotic_snapshot_log=getattr(kenv, "exotic_snapshot_log", None) or [],
-            push_chute_log=getattr(kenv, "push_chute_log", None) or [],
-            oee_draw_log=getattr(kenv, "oee_draw_log", None) or [],
-            supermarket_overflow_log=getattr(kenv, "supermarket_overflow_log", None) or [],
-            push_delivery_log=getattr(kenv, "push_delivery_log", None) or [],
+            event_log=getattr(menv, "event_log", None) or [],
+            snapshot_log=getattr(menv, "snapshot_log", None) or [],
+            shortfall_log=getattr(menv, "shortfall_log", None) or [],
+            daily_log=getattr(menv, "daily_log", None) or [],
+            gate_activity_log=getattr(menv, "gate_activity_log", None) or [],
+            exotic_snapshot_log=getattr(menv, "exotic_snapshot_log", None) or [],
+            push_chute_log=getattr(menv, "push_chute_log", None) or [],
+            oee_draw_log=getattr(menv, "oee_draw_log", None) or [],
+            supermarket_overflow_log=getattr(menv, "supermarket_overflow_log", None) or [],
+            push_delivery_log=getattr(menv, "push_delivery_log", None) or [],
         )

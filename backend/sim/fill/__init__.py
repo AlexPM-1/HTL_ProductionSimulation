@@ -5,8 +5,8 @@ Movement 1 — chute FILLING.
 
     sim/fill/pull/   withdrawal, supermarket assignment, collection-box
                       emptying, card recycling, day-boundary checkpoint,
-                      the start_kanban_simulation() launcher
-    sim/fill/push/   rolling per-order dispatcher, chunking, exotic
+                      the start_mixed_simulation() launcher
+    sim/fill/push/   rolling per-order dispatcher, splitting, exotic
                       Supermarket deposit/withdraw tracking, chute
                       bookkeeping
 

@@ -2,7 +2,7 @@
 reports/movement/status.py
 ============================
 production_status_at() and build_production_occupants() — what a line's
-gate is doing at a point in time, and the actual card/chunk token(s)
+gate is doing at a point in time, and the actual card/push card token(s)
 sitting in the Production rectangle for it. Kept as one pair since
 reports/movement/frames.py always calls them together; deliberately
 NOT folded into reports.movement.transit.build_in_transit (see
@@ -38,11 +38,11 @@ def production_status_at(
     reports/movement/supermarket.py, reports/movement/trace.card_state_at).
 
     Returns one of:
-      {"state": "producing", "sachnummer": str, "sim_class": "pull"|"push",
+      {"state": "producing", "product_number": str, "production_type": "pull"|"push",
        "crew_id": int, "since_t": float, "possible_changeover": bool}
-      {"state": "idle", "sachnummer": None, "sim_class": None,
+      {"state": "idle", "product_number": None, "production_type": None,
        "crew_id": None, "since_t": float | None, "possible_changeover": False}
-      {"state": "off_shift", "sachnummer": None, "sim_class": None,
+      {"state": "off_shift", "product_number": None, "production_type": None,
        "crew_id": None, "since_t": float | None, "possible_changeover": False}
 
     "crew_id" — which crew_process(crew_id=...) instance was holding
@@ -63,7 +63,7 @@ def production_status_at(
     check is purely additive on top of it.
 
     This distinction only ever applies to what would OTHERWISE have been
-    "idle" — it never overrides "producing". A batch/chunk that started
+    "idle" — it never overrides "producing". A batch/push card that started
     while on-shift and is still finishing after its shift's window
     closes is still, correctly, reported as "producing".
     """
@@ -80,8 +80,8 @@ def production_status_at(
     if active is not None:
         return {
             "state": "producing",
-            "sachnummer": active.sachnummer,
-            "sim_class": active.sim_class,
+            "product_number": active.product_number,
+            "production_type": active.production_type,
             "crew_id": active.crew_id,
             "since_t": active.t_start,
             "possible_changeover": active.possible_changeover,
@@ -95,8 +95,8 @@ def production_status_at(
         if not shift_calendar.is_line_on(line_name, at):
             return {
                 "state": "off_shift",
-                "sachnummer": None,
-                "sim_class": None,
+                "product_number": None,
+                "production_type": None,
                 "crew_id": None,
                 "since_t": last_end,
                 "possible_changeover": False,
@@ -104,8 +104,8 @@ def production_status_at(
 
     return {
         "state": "idle",
-        "sachnummer": None,
-        "sim_class": None,
+        "product_number": None,
+        "production_type": None,
         "crew_id": None,
         "since_t": last_end,
         "possible_changeover": False,
@@ -116,12 +116,12 @@ def build_production_occupants(frame: dict, lid: int, production_status: dict) -
     """
     The actual token(s) to draw in the Production rectangle right now
     (one line = one job at a time). Resolved from production_status,
-    NOT from frame's raw "in_production" bucket directly — a KanbanCard
+    NOT from frame's raw "in_production" bucket directly — a PullCard
     is marked in_production for its WHOLE released batch, starting the
     instant the production-trigger process pops it off the chute, which
     can be before the batch has actually secured the line's gate if
     something else is still running. Filtering frame's "in_production"
-    cards down to production_status's own sachnummer still isn't
+    cards down to production_status's own product_number still isn't
     perfectly precise (a same-product batch queued behind the running
     one would also match), but it's a real improvement over drawing
     every "in_production" card regardless of whether it's actually on
@@ -136,19 +136,19 @@ def build_production_occupants(frame: dict, lid: int, production_status: dict) -
     """
     production_occupants: list[dict] = []
     if production_status["state"] == "producing":
-        if production_status["sim_class"] == "pull":
+        if production_status["production_type"] == "pull":
             production_occupants = [
-                {"card_id": c["card_id"], "product_type": production_status["sachnummer"], "kind": "pull"}
-                for c in frame.get((lid, "in_production", production_status["sachnummer"]), [])
+                {"card_id": c["card_id"], "product_type": production_status["product_number"], "kind": "pull"}
+                for c in frame.get((lid, "in_production", production_status["product_number"]), [])
             ]
-        elif production_status["sim_class"] == "push":
-            # Push chunks never get a KanbanCard — no real per-piece id
+        elif production_status["production_type"] == "push":
+            # Push cards never get a PullCard — no real per-piece id
             # exists, same situation as a push chute entry. Synthesize
             # one deterministic id from the gate hold's own start time so
             # repeated calls for the same instant return the same id.
             production_occupants = [{
                 "card_id": f"push-{lid}-{production_status['since_t']:.3f}",
-                "product_type": production_status["sachnummer"],
+                "product_type": production_status["product_number"],
                 "kind": "push",
             }]
     return production_occupants

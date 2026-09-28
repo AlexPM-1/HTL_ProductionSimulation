@@ -220,6 +220,12 @@
   .order-detail-body h4{margin:14px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-faint);}
   .order-detail-body .kpi-line-card{background:#fff;margin-top:10px;}
 
+  /* ---------------- Pull vs push (All Production tab) ---------------- */
+  .pvp-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media (max-width: 720px){ .pvp-grid{grid-template-columns:1fr;} }
+  .pvp-side-head{margin:0 0 10px;font-size:14px;}
+  .pvp-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+
   /* ---------------- Supermarket state (All Production tab) ---------------- */
   .sm-line-block{margin-bottom:26px;}
   .sm-line-block h3{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:8px;}
@@ -371,8 +377,8 @@
           <div class="hint" style="margin-top:2px;">How many <code>crew_process()</code> workers share the plant's lines this run — each holds at most one line at a time.</div>
         </div>
         <div class="field">
-          <label>Push chunk size</label>
-          <input type="number" id="inChunkSize" value="200" min="1" />
+          <label>Push card size</label>
+          <input type="number" id="inPushCardSize" value="200" min="1" />
         </div>
         <div class="field">
           <label>Horizon override (h) — optional</label>
@@ -433,7 +439,7 @@
     <div class="hint" style="margin:6px 4px 0;">
       Calls <code>POST /api/simulate_mixed</code> — class-1 (Kanban/pull) is
       priority, non-preemptive; class-2 (push) fills in after a 1-min idle
-      gap, chunked so pull can always jump the queue.
+      gap, split into push cards so pull can always jump the queue.
     </div>
 
     <div id="errorSlot"></div>
@@ -466,7 +472,7 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="all" onclick="switchTopTab('all')">All Production</button>
-      <button class="tab" data-tab="pull" onclick="switchTopTab('pull')"><span class="dot" style="background:var(--purple)"></span>Kanban (Pull)</button>
+      <button class="tab" data-tab="pull" onclick="switchTopTab('pull')"><span class="dot" style="background:var(--purple)"></span>Pull</button>
       <button class="tab" data-tab="push" onclick="switchTopTab('push')"><span class="dot" style="background:var(--blue)"></span>Push</button>
     </div>
 
@@ -480,6 +486,7 @@
         <button class="subtab" data-sub="all-gate" onclick="switchSubTab('all','gate')">Gate Status</button>
         <button class="subtab" data-sub="all-supermarket" onclick="switchSubTab('all','supermarket')">Supermarkets</button>
         <button class="subtab" data-sub="all-routing" onclick="switchSubTab('all','routing')">Order Routing</button>
+        <button class="subtab" data-sub="all-pullvspush" onclick="switchSubTab('all','pullvspush')">Pull vs Push</button>
       </div>
 
       <div class="sub-panel" id="sub-all-gantt">
@@ -536,6 +543,21 @@
           <div id="orderRoutingTimelineContainer"><div class="empty-state"><div class="icon">🧾</div><h3>No data yet</h3></div></div>
         </div>
       </div>
+
+      <div class="sub-panel" id="sub-all-pullvspush" style="display:none;">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Pull vs push — totals</h2><p>From <code>pull_vs_push.total</code> — parts actually produced, completed cards, and distinct customer orders, split by production class over the whole run. An order counts once no matter how many cards or parts it took to fulfil.</p></div>
+          </div>
+          <div id="pullVsPushTotalsContainer"><div class="empty-state"><div class="icon">⚖️</div><h3>No data yet</h3><p>Run a simulation to compare pull vs push volume.</p></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2>Pull vs push — daily</h2><p>From <code>pull_vs_push.daily</code> — same three counts per production day: parts/cards on the day they were actually produced, orders on the day they were fully delivered. A production day starts at the run's configured day-start hour, not midnight.</p></div>
+          </div>
+          <div id="pullVsPushDailyContainer"><div class="empty-state"><div class="icon">📅</div><h3>No data yet</h3><p>Run a simulation to see the day-by-day pull/push split.</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ============ KANBAN (PULL) ============ -->
@@ -563,7 +585,7 @@
 
       <div class="sub-panel" id="sub-pull-kpi" style="display:none;">
         <div class="panel">
-          <div class="panel-head"><div><h2>Per-line KPIs — pull only</h2><p>From <code>kpi_by_class[line].pull</code> — parts whose <code>product_type</code> is in the CustomerDemandKanban product set.</p></div></div>
+          <div class="panel-head"><div><h2>Per-line KPIs — pull only</h2><p>From <code>kpi_by_class[line].pull</code> — parts whose <code>product_type</code> is in the PullCustomerDemand product set.</p></div></div>
           <div id="daytabs-pull-kpi"></div>
           <div class="note-banner" id="pullKpiDayNote" style="display:none;">These KPI totals are aggregated over the whole run — the API doesn't return a per-day breakdown, so switching days here doesn't change the numbers below. Use the Gantt tab to inspect what happened on a specific day.</div>
           <div id="pullKpiContainer"><div class="empty-state"><div class="icon">📈</div><h3>No data yet</h3></div></div>
@@ -662,7 +684,7 @@
         <div class="panel">
           <div class="panel-head"><div><h2>Per-line KPIs — push only</h2><p>From <code>kpi_by_class[line].push</code> — parts whose <code>product_type</code> is in the CustomerDemand product set.</p></div></div>
           <div id="daytabs-push-kpi"></div>
-          <div class="note-banner">There is no push-side restmenge/card-flow equivalent in <code>mixed_runner.py</code> yet — unfinished push chunks aren't tracked as a queryable list, so this tab is pass/scrap/rework/cycle-time only.</div>
+          <div class="note-banner">There is no push-side restmenge/card-flow equivalent in <code>mixed_runner.py</code> yet — unfinished push cards aren't tracked as a queryable list, so this tab is pass/scrap/rework/cycle-time only.</div>
           <div class="note-banner" id="pushKpiDayNote" style="display:none;">These KPI totals are aggregated over the whole run — the API doesn't return a per-day breakdown, so switching days here doesn't change the numbers below. Use the Gantt tab to inspect what happened on a specific day.</div>
           <div id="pushKpiContainer"><div class="empty-state"><div class="icon">📈</div><h3>No data yet</h3></div></div>
         </div>
@@ -670,10 +692,10 @@
 
       <div class="sub-panel" id="sub-push-delivery" style="display:none;">
         <div class="panel">
-          <div class="panel-head"><div><h2>Push delivery performance</h2><p>From <code>push_kpi</code> / <code>push_delivery_log</code> — due date vs. delivered date for every completed push chunk.</p></div></div>
+          <div class="panel-head"><div><h2>Push delivery performance</h2><p>From <code>push_kpi</code> / <code>push_delivery_log</code> — due date vs. delivered date for every completed push card.</p></div></div>
           <div class="note-banner">Full-run log — <code>PushDeliveryRecord</code> carries calendar due/delivered dates, not sim-elapsed time, so there's no day-tab breakdown here.</div>
           <div class="stat-strip" id="pushDeliveryStatStrip" style="display:none;"></div>
-          <div id="pushDeliveryTableContainer"><div class="empty-state"><div class="icon">🚚</div><h3>No data yet</h3><p>Run a simulation to see completed push chunks against their due dates.</p></div></div>
+          <div id="pushDeliveryTableContainer"><div class="empty-state"><div class="icon">🚚</div><h3>No data yet</h3><p>Run a simulation to see completed push cards against their due dates.</p></div></div>
         </div>
       </div>
 
@@ -686,7 +708,7 @@
           </div>
           <div class="issue-block">
             <div class="section-title">Exotic supermarket overflow</div>
-            <div id="pushOverflowContainer"><div class="empty-state"><div class="icon">✅</div><h3>None yet</h3><p>Flagged whenever a finished push chunk had nowhere to deposit — production kept going regardless.</p></div></div>
+            <div id="pushOverflowContainer"><div class="empty-state"><div class="icon">✅</div><h3>None yet</h3><p>Flagged whenever a finished push card had nowhere to deposit — production kept going regardless.</p></div></div>
           </div>
         </div>
       </div>
@@ -963,15 +985,15 @@ function absClockLabel(elapsed, unit){
   return `${formatClockTime(absHour)} · Day ${dayIdx} (${dateForDay(dayIdx)})`;
 }
 function productionTypeLabel(seg){
-  const cls = segSimClass(seg);
+  const cls = segProductionType(seg);
   if(cls === 'pull') return 'Pull';
   if(cls === 'push') return 'Push';
   return null;
 }
 // Which crew_process(crew_id=...) instance produced this segment (v10) —
 // resolved defensively across possible payload key names, mirroring
-// segSimClass()'s multi-key fallback, since crew attribution on Gantt job
-// segments is newer than sim_class/simClass and the exact key
+// segProductionType()'s multi-key fallback, since crew attribution on Gantt job
+// segments is newer than production_type/productionType and the exact key
 // schedule_events.build_gantt_payload settles on may vary. crew_id is
 // 0-based on the backend (see kpi_by_crew / GateActivityEntry), so this
 // returns the 0-based id — use crewLabel() for the 1-based display form.
@@ -986,7 +1008,7 @@ function crewLabel(seg){
 function jobTooltip(seg, unit){
   const typeLabel = productionTypeLabel(seg);
   const crewLbl = crewLabel(seg);
-  return `<b>${seg.sachnummer||'—'}</b><br>`+
+  return `<b>${seg.product_number||'—'}</b><br>`+
     `${seg.kunde? 'Customer: '+seg.kunde+'<br>':''}`+
     `${seg.productClass? 'Class: '+seg.productClass+'<br>':''}`+
     `${crewLbl? 'Crew: '+crewLbl+'<br>':''}`+
@@ -1021,7 +1043,7 @@ function isNonJobSegType(t){
   return t === 'idle' || t === 'setup' || t === 'off_shift' || t === 'off-shift';
 }
 function otherTooltip(seg, unit, otherLabel){
-  return `<b>${otherLabel}</b><br>${seg.sachnummer? 'Product: '+escapeHtml(seg.sachnummer)+'<br>':''}`+
+  return `<b>${otherLabel}</b><br>${seg.product_number? 'Product: '+escapeHtml(seg.product_number)+'<br>':''}`+
     `<span class="tt-muted">Duration: ${seg.duration.toFixed(3)} ${unitLabel(unit)} · start ${seg.start.toFixed(2)} ${unitLabel(unit)}</span>`;
 }
 
@@ -1061,10 +1083,10 @@ function openMovementSimulation(event){
   params.set('api_base', document.getElementById('apiBaseInput').value.replace(/\/+$/,''));
 
   // activeTopTab is 'all' | 'pull' | 'push'. The movement page's mode is
-  // only push|kanban (a cls filter on the one shared run -- see
+  // only push|pull (a cls filter on the one shared run -- see
   // api_server_mixed.py) -- 'all' has no single equivalent, so leave mode
   // unset and let the person pick on the movement page in that case.
-  if(activeTopTab === 'pull') params.set('mode', 'kanban');
+  if(activeTopTab === 'pull') params.set('mode', 'pull');
   if(activeTopTab === 'push') params.set('mode', 'push');
 
   // Best-effort day carry-over: use whichever gantt panel matches the
@@ -1250,7 +1272,7 @@ function buildPrintReportSections(){
 
   const sections = [
     {id:'top-all',  title:'All Production'},
-    {id:'top-pull', title:'Kanban (Pull)'},
+    {id:'top-pull', title:'Pull'},
     {id:'top-push', title:'Push'},
   ];
   return sections.map(s => {
@@ -1293,11 +1315,11 @@ function buildPrintReportCover(){
     ['Workers', summary.n_workers != null ? summary.n_workers + 'MA' : '—'],
     ['Seed', summary.seed ?? '—'],
     ['Day start hour', summary.day_start_hour != null ? summary.day_start_hour + ':00' : '—'],
-    ['Push chunk size', summary.push_chunk_size ?? '—'],
+    ['Push card size', summary.push_card_size ?? '—'],
     ['Horizon', summary.horizon_h != null ? summary.horizon_h.toFixed(2) + ' h' : '—'],
     ['Sim end', summary.sim_end_h != null ? summary.sim_end_h.toFixed(2) + ' h' : '—'],
     ['Cards tracked', summary.cards_tracked ?? '—'],
-    ['Pull / Push SKUs', (summary.n_kanban_products ?? '—') + ' / ' + (summary.n_push_products ?? '—')],
+    ['Pull / Push SKUs', (summary.n_pull_products ?? '—') + ' / ' + (summary.n_push_products ?? '—')],
   ];
   return `
     <section class="report-cover">
@@ -1500,7 +1522,7 @@ async function runMixedSimulation(){
     seed: parseInt(document.getElementById('inSeed').value, 10) || 42,
     day_start_hour: parseInt(document.getElementById('inDayStartHour').value, 10) || 6,
     n_crews: parseInt(document.getElementById('inNCrews').value, 10) || 2,
-    push_chunk_size: parseInt(document.getElementById('inChunkSize').value, 10) || 50,
+    push_card_size: parseInt(document.getElementById('inPushCardSize').value, 10) || 50,
     horizon_s: horizonRaw === '' ? null : parseFloat(horizonRaw) * 3600.0,
     time_unit: 'h',
   };
@@ -1549,6 +1571,7 @@ function onSimulateComplete(data){
   renderGateStatus(data.gate_status);
   loadSupermarketState();
   loadOrderRouting(data.order_routing);
+  loadPullVsPush(data.pull_vs_push);
 
   // Kanban (Pull)
   renderPullGanttPanel();
@@ -1574,7 +1597,7 @@ function onSimulateComplete(data){
 
   document.getElementById('mainSubtitle').textContent =
     `${data.summary.n_workers}MA · seed ${data.summary.seed} · sim end ${data.summary.sim_end_h.toFixed(2)}h / `+
-    `horizon ${data.summary.horizon_h.toFixed(2)}h · ${data.summary.n_kanban_products} pull SKUs · ${data.summary.n_push_products} push SKUs`;
+    `horizon ${data.summary.horizon_h.toFixed(2)}h · ${data.summary.n_pull_products} pull SKUs · ${data.summary.n_push_products} push SKUs`;
 }
 
 function renderStatStrip(summary){
@@ -1596,12 +1619,12 @@ function renderRunSummary(summary){
     ['Workers', summary.n_workers + 'MA'],
     ['Seed', summary.seed],
     ['Day start hour', summary.day_start_hour + ':00'],
-    ['Push chunk size', summary.push_chunk_size],
+    ['Push card size', summary.push_card_size],
     ['Horizon', summary.horizon_h.toFixed(2) + ' h'],
     ['Sim end', summary.sim_end_h.toFixed(2) + ' h'],
     ['Wall time', summary.wall_time_s.toFixed(2) + ' s'],
     ['Cards tracked', summary.cards_tracked],
-    ['Pull / Push SKUs', summary.n_kanban_products + ' / ' + summary.n_push_products],
+    ['Pull / Push SKUs', summary.n_pull_products + ' / ' + summary.n_push_products],
   ];
   document.getElementById('runSummaryBody').innerHTML =
     rows.map(([k,v])=>`<div class="run-summary-row"><span>${k}</span><span>${escapeHtml(String(v))}</span></div>`).join('');
@@ -1610,7 +1633,7 @@ function renderRunSummary(summary){
 /* =========================================================================
    Gantt (shared renderer, with optional production-type filter)
    classFilter == null            -> render every segment as-is (All Production view)
-   classFilter == 'pull'|'push'   -> job segments are filtered by seg.simClass
+   classFilter == 'pull'|'push'   -> job segments are filtered by seg.productionType
                         ("pull" = class-1/Kanban, "push" = class-2/push — the
                         tag mixed_runner.py writes onto each ScheduleEvent
                         post-hoc based on which gated call produced it, see
@@ -1630,11 +1653,11 @@ function renderRunSummary(summary){
 //                             (so ~2–2.5 days are visible at once) with horizontal scroll.
 // windowRange == {start,end} in gantt.time_unit units -> a single day's slice,
 //                             segments clipped to the window and stretched to fill the panel.
-function segSimClass(seg){
-  // "pull"/"push" per mixed_runner.py's ScheduleEvent.sim_class tagging.
-  // Checked under a couple of likely JSON key casings since the exact
-  // serialization in schedule_events.py isn't visible from the frontend.
-  return seg.simClass ?? seg.sim_class ?? seg.production_class ?? null;
+function segProductionType(seg){
+  // "pull"/"push" per mixed_runner.py's ScheduleEvent.production_type
+  // tagging, serialized onto each Gantt segment as "productionType" (see
+  // reports/all/gantt.py).
+  return seg.productionType ?? null;
 }
 function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange, crewFilter){
   if(!gantt || !gantt.lines || !gantt.lines.length){
@@ -1695,21 +1718,22 @@ function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange,
   }
 
   // Sanity check: if we're filtering by production type but NONE of this
-  // gantt's job segments carry a resolvable sim class anywhere, the field
-  // name guessed in segSimClass() probably doesn't match the real payload —
-  // warn instead of silently rendering an empty/misleading view again.
+  // gantt's job segments carry a resolvable production type anywhere, the
+  // field name guessed in segProductionType() probably doesn't match the
+  // real payload — warn instead of silently rendering an empty/misleading
+  // view again.
   let sawAnyJob = false, sawAnyClass = false;
   if(classFilter != null){
     gantt.lines.forEach(line => (gantt.schedule[line] || []).forEach(seg => {
       if(!isNonJobSegType(seg.type)){
         sawAnyJob = true;
-        if(segSimClass(seg) != null) sawAnyClass = true;
+        if(segProductionType(seg) != null) sawAnyClass = true;
       }
     }));
   }
   if(classFilter != null && sawAnyJob && !sawAnyClass){
     document.getElementById(containerId).innerHTML =
-      `<div class="empty-state"><p><b>Can't tell pull from push here.</b><br>None of this run's job segments carry a recognizable production-type field (checked <code>simClass</code> / <code>sim_class</code> / <code>production_class</code>). Check what key <code>schedule_events.build_gantt_payload</code> actually puts on each segment for the pull/push tag and update <code>segSimClass()</code> to match.</p></div>`;
+      `<div class="empty-state"><p><b>Can't tell pull from push here.</b><br>None of this run's job segments carry a recognizable production-type field (checked <code>productionType</code>). Check what key <code>schedule_events.build_gantt_payload</code> actually puts on each segment for the pull/push tag and update <code>segProductionType()</code> to match.</p></div>`;
     return;
   }
 
@@ -1740,7 +1764,7 @@ function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange,
     const visibleSegs = segs.filter(seg => {
       const overlaps = (seg.start + seg.duration) > winStart + 1e-9 && seg.start < winEnd - 1e-9;
       if(!overlaps) return false;
-      if(classFilter != null && !isNonJobSegType(seg.type) && segSimClass(seg) !== classFilter) return false;
+      if(classFilter != null && !isNonJobSegType(seg.type) && segProductionType(seg) !== classFilter) return false;
       return true;
     });
 
@@ -1770,10 +1794,10 @@ function renderGanttInto(containerId, legendId, gantt, classFilter, windowRange,
           onmouseenter="showTooltip(event, ${JSON.stringify(setupTooltip(seg, gantt.time_unit)).replace(/"/g,'&quot;')})"
           onmouseleave="hideTooltip()">${label}</div>`;
       }
-      const bg = colorForSku(seg.sachnummer);
+      const bg = colorForSku(seg.product_number);
       let inner = '';
       if(widthPct > 14){
-        inner = `<span class="seg-text">${escapeHtml(seg.sachnummer||'')} <span class="seg-rate">· ${seg.rate!=null? seg.rate.toFixed(0)+'/h':''}</span></span>`;
+        inner = `<span class="seg-text">${escapeHtml(seg.product_number||'')} <span class="seg-rate">· ${seg.rate!=null? seg.rate.toFixed(0)+'/h':''}</span></span>`;
       }else if(widthPct > 5){
         inner = `<span class="seg-text">${seg.rate!=null? seg.rate.toFixed(0):''}</span>`;
       }
@@ -1981,7 +2005,7 @@ function renderOrderRoutingSummaryTable(rows){
       <td>${r.order_id}</td>
       <td>${formatIsoDateTime(r.due_date)}</td>
       <td>${badge}</td>
-      <td>${escapeHtml(r.sachnummer || '—')}</td>
+      <td>${escapeHtml(r.product_number || '—')}</td>
       <td>${escapeHtml(r.line || '—')}</td>
       <td>${escapeHtml(cards)}</td>
     </tr>`;
@@ -2037,7 +2061,7 @@ function renderOrderRoutingTimeline(timeline){
 
     // Pull: a withdrawal WINDOW spanning every card ever drawn for this
     // order (withdrawal_start/end). Push: a single instant — the moment
-    // the customer actually withdrew the chunk (customer_withdrawal_date),
+    // the customer actually withdrew the push_card (customer_withdrawal_date),
     // distinct from delivered_date (production finishing) below.
     const withdrawn = isPull
       ? ((o.withdrawal_start || o.withdrawal_end)
@@ -2048,12 +2072,12 @@ function renderOrderRoutingTimeline(timeline){
     return `<details class="order-detail">
         <summary>
           <span>Order ${o.order_id}${badge}</span>
-          <span class="order-detail-sub">${escapeHtml(o.sachnummer || '—')} · qty ${o.quantity ?? '—'} · due ${formatIsoDateTime(o.due_date)}</span>
+          <span class="order-detail-sub">${escapeHtml(o.product_number || '—')} · qty ${o.quantity ?? '—'} · due ${formatIsoDateTime(o.due_date)}</span>
         </summary>
         <div class="order-detail-body">
           <div class="kpi-line-card">
             <div class="row"><span>Type</span><span>${escapeHtml(o.production_type || '—')}</span></div>
-            <div class="row"><span>Product</span><span>${escapeHtml(o.sachnummer || '—')}</span></div>
+            <div class="row"><span>Product</span><span>${escapeHtml(o.product_number || '—')}</span></div>
             <div class="row"><span>Quantity</span><span>${o.quantity ?? '—'}</span></div>
             <div class="row"><span>Due</span><span>${formatIsoDateTime(o.due_date)}</span></div>
             <div class="row"><span>Withdrawn</span><span>${withdrawn}</span></div>
@@ -2078,6 +2102,96 @@ function renderOrderRoutingPanel(){
   }
   renderOrderRoutingSummaryTable(data.summary || []);
   renderOrderRoutingTimeline(data.timeline || []);
+}
+
+/* =========================================================================
+   Pull vs push (All Production tab) — data.pull_vs_push off the
+   POST /api/simulate_mixed response: {"total":{"pull":{...},"push":{...}},
+   "daily":[{"date","pull":{...},"push":{...}}, ...]} — see
+   reports.all.pull_vs_push. Cached client-side, same pattern as
+   order_routing above (fetched once per run, no separate endpoint call).
+   ========================================================================= */
+let lastPullVsPushData = null; // {total:{...}, daily:[...]}
+
+function loadPullVsPush(pullVsPush){
+  lastPullVsPushData = pullVsPush || null;
+  renderPullVsPushPanel();
+}
+
+function pvpStatCard(label, value){
+  return `<div class="stat-card"><div class="label">${escapeHtml(label)}</div><div class="value">${value ?? '—'}</div></div>`;
+}
+
+function renderPullVsPushTotals(total){
+  const container = document.getElementById('pullVsPushTotalsContainer');
+  if(!total){
+    container.innerHTML = '<div class="empty-state"><div class="icon">⚖️</div><h3>No data yet</h3><p>Run a simulation to compare pull vs push volume.</p></div>';
+    return;
+  }
+  const pull = total.pull || {};
+  const push = total.push || {};
+  container.innerHTML = `<div class="pvp-grid">
+      <div>
+        <h3 class="pvp-side-head"><span class="class-badge pull">pull</span></h3>
+        <div class="pvp-stats">
+          ${pvpStatCard('Parts', pull.parts)}
+          ${pvpStatCard('Cards', pull.cards)}
+          ${pvpStatCard('Orders', pull.orders)}
+        </div>
+      </div>
+      <div>
+        <h3 class="pvp-side-head"><span class="class-badge push">push</span></h3>
+        <div class="pvp-stats">
+          ${pvpStatCard('Parts', push.parts)}
+          ${pvpStatCard('Cards', push.cards)}
+          ${pvpStatCard('Orders', push.orders)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderPullVsPushDaily(daily){
+  const container = document.getElementById('pullVsPushDailyContainer');
+  if(!daily || !daily.length){
+    container.innerHTML = '<div class="empty-state"><div class="icon">📅</div><h3>No daily data yet</h3><p>Either no simulation has run yet, or this run has no wall-clock epoch to bucket days by.</p></div>';
+    return;
+  }
+  const rows = daily.map(d => {
+    const pull = d.pull || {};
+    const push = d.push || {};
+    return `<tr>
+      <td>${escapeHtml(d.date || '—')}</td>
+      <td class="num">${pull.parts ?? 0}</td>
+      <td class="num">${pull.cards ?? 0}</td>
+      <td class="num">${pull.orders ?? 0}</td>
+      <td class="num">${push.parts ?? 0}</td>
+      <td class="num">${push.cards ?? 0}</td>
+      <td class="num">${push.orders ?? 0}</td>
+    </tr>`;
+  }).join('');
+  container.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr>
+        <th>Date</th>
+        <th>Parts <span class="class-badge pull">pull</span></th>
+        <th>Cards <span class="class-badge pull">pull</span></th>
+        <th>Orders <span class="class-badge pull">pull</span></th>
+        <th>Parts <span class="class-badge push">push</span></th>
+        <th>Cards <span class="class-badge push">push</span></th>
+        <th>Orders <span class="class-badge push">push</span></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function renderPullVsPushPanel(){
+  const data = lastPullVsPushData;
+  if(!data){
+    renderPullVsPushTotals(null);
+    renderPullVsPushDaily([]);
+    return;
+  }
+  renderPullVsPushTotals(data.total || null);
+  renderPullVsPushDaily(data.daily || []);
 }
 
 /* =========================================================================
@@ -2135,31 +2249,31 @@ function smFillCell(n, capacity, exoticStyle){
 // Combines one line's physical rows + exotic-routed (no-row) products
 // into ONE flat list of "row defs", each tagged Pull or Push: Main-runner
 // rows and exotic-routed Kanban products are Pull; physical Exotic rows
-// are Push (they're only ever filled by push chunks — see mixed_runner.
-// _deposit_push_chunk_to_supermarket — a Kanban-eligible product with no
+// are Push (they're only ever filled by push cards — see mixed_runner.
+// _deposit_push_card_to_supermarket — a Kanban-eligible product with no
 // Main-runner row still draws from a synthetic PULL-side store, never
 // from these physical Exotic slots, despite the "routed via Exotic pool"
 // business framing; see entities_resources_v5.SupermarketResource.
 // is_exotic_routed's docstring).
 function buildSmRowDefs(line){
   const rows = [...line.rows].sort((a,b)=>a.row_number-b.row_number).map(r => ({
-    chartTitle: r.is_exotic ? `Row ${r.row_number} · Exotic` : `Row ${r.row_number} · ${r.sachnummer}`,
+    chartTitle: r.is_exotic ? `Row ${r.row_number} · Exotic` : `Row ${r.row_number} · ${r.product_number}`,
     kind: r.is_exotic ? 'push' : 'pull',
     typeLabel: r.is_exotic ? 'Exotic' : 'Main runner',
     row_number: r.row_number,
     capacity: r.capacity,
     is_exotic: r.is_exotic,
-    product: r.is_exotic ? null : r.sachnummer,
+    product: r.is_exotic ? null : r.product_number,
     series: r.series,
   }));
   const routed = (line.exotic_routed_products||[]).map(p => ({
-    chartTitle: `${p.sachnummer} · Exotic pool (no row)`,
+    chartTitle: `${p.product_number} · Exotic pool (no row)`,
     kind: 'pull',
     typeLabel: 'Exotic pool (no row)',
     row_number: null,
     capacity: p.capacity,
     is_exotic: false,
-    product: p.sachnummer,
+    product: p.product_number,
     series: p.series,
   }));
   return [...rows, ...routed];
@@ -2168,7 +2282,7 @@ function buildSmRowDefs(line){
 // Distinct products with stock (n_cards > 0) at some point within
 // [win.start, win.end], tagged Pull/Push. Physical Exotic rows can hold
 // different occupants at different times, so this reads each series
-// point's own `sachnummer` rather than a fixed product; Pull rows/
+// point's own `product_number` rather than a fixed product; Pull rows/
 // products have a fixed product name throughout.
 // Resolves whether one row def has ANY stock within [win.start, win.end],
 // and (for Exotic rows, whose occupant can change over time) which
@@ -2181,7 +2295,7 @@ function smRowActivity(rd, win){
   (rd.series||[]).forEach(pt => {
     if(pt.t < win.start - 1e-9 || pt.t > win.end + 1e-9) return;
     if(rd.is_exotic){
-      if(pt.sachnummer && pt.n_cards > 0){ active = true; product = pt.sachnummer; }
+      if(pt.product_number && pt.n_cards > 0){ active = true; product = pt.product_number; }
     } else if(pt.n_cards > 0){
       active = true;
     }
@@ -2195,7 +2309,7 @@ function renderAllSupermarketRowTable(line){
   const rowsHtml = rows.map(r => {
     const last = r.series && r.series.length ? r.series[r.series.length-1] : null;
     if(r.is_exotic){
-      const occupant = last && last.sachnummer;
+      const occupant = last && last.product_number;
       return `<tr>
         <td>${r.row_number}</td>
         <td><span class="sm-row-type-badge exotic">Exotic</span></td>
@@ -2213,10 +2327,10 @@ function renderAllSupermarketRowTable(line){
     return `<tr>
       <td>${r.row_number}</td>
       <td><span class="sm-row-type-badge main">Main runner</span></td>
-      <td>${escapeHtml(r.sachnummer)}${sharedNote}</td>
+      <td>${escapeHtml(r.product_number)}${sharedNote}</td>
       <td class="num">${r.capacity}</td>
       <td>${smFillCell(n, r.capacity, false)}</td>
-      <td class="num">${pcsPartial>0 ? pcsPartial + (r.batch_size? ' / '+r.batch_size:'') : '—'}</td>
+      <td class="num">${pcsPartial>0 ? pcsPartial + (r.card_size? ' / '+r.card_size:'') : '—'}</td>
     </tr>`;
   }).join('');
 
@@ -2225,7 +2339,7 @@ function renderAllSupermarketRowTable(line){
       <b>${routed.length}</b> Kanban product${routed.length===1?'':'s'} on ${escapeHtml(line.line_name)} ${routed.length===1?'has':'have'} no dedicated Main-runner row and ${routed.length===1?'is':'are'} routed via the shared Exotic pool instead — included below, labeled "no row":
       <div>${routed.map(p => {
         const last = p.series && p.series.length ? p.series[p.series.length-1] : null;
-        return `<span class="sm-routed-chip">${escapeHtml(p.sachnummer)} · ${last?last.n_cards:0}/${p.capacity} cards</span>`;
+        return `<span class="sm-routed-chip">${escapeHtml(p.product_number)} · ${last?last.n_cards:0}/${p.capacity} cards</span>`;
       }).join('')}</div>
     </div>` : '';
 
@@ -2366,7 +2480,7 @@ function renderPushDeliveryPanel(data){
           deltaHtml = `<span class="delta-chip ${cls}">${label}</span>`;
         }
         return `<tr>
-          <td>${escapeHtml(r.sachnummer||'—')}</td>
+          <td>${escapeHtml(r.product_number||'—')}</td>
           <td>${escapeHtml(r.assigned_line||'—')}</td>
           <td class="num">${r.quantity ?? '—'}</td>
           <td>${formatIsoDateTime(r.due_date)}</td>
@@ -2410,7 +2524,7 @@ function renderPushIssuesPanel(data){
       <tbody>${overflow.map(f => `<tr>
         <td>${f.t!=null? (f.t/3600).toFixed(2)+'h':'—'}</td>
         <td>${escapeHtml(f.line||'—')}</td>
-        <td>${escapeHtml(f.sachnummer||'—')}</td>
+        <td>${escapeHtml(f.product_number||'—')}</td>
         <td>${escapeHtml(f.reason||'—')}</td>
       </tr>`).join('')}</tbody>
     </table></div>`;
@@ -2561,7 +2675,7 @@ function renderCardFlowChart(cardFlow){
        count as its own open line, all in parallel on one chart, so the
        lines can be compared directly.
      - a specific line: that line's shortfall broken down per product
-       (sachnummer), stacked — reuses the same drawStackedQuantityChart
+       (product_number), stacked — reuses the same drawStackedQuantityChart
        the Supermarket tab uses for packages/Restmenge.
    Same "Full span / Day N" windowing as Card Flow throughout. Lines/
    products that never had a shortfall are left out of their respective

@@ -19,17 +19,17 @@ class PushChuteTracker:
     the PUSH side only — the push-side analogue of
     ExoticSupermarketTracker, with the SAME caveat: this is a
     self-contained bookkeeping structure fed entirely from
-    push_dispatch_process()'s chute.push_chunk()/chute.push_rush_entry()
+    push_dispatch_process()'s chute.enter_push_cards()/chute.push_rush_entry()
     calls and run_push_turn()'s (sim/drain/push_turn.py, via crew_process)
     chute.pop_next_of_class("push") calls — the ONLY push-side
-    admission/removal call sites — not wired into KanbanChuteResource's
+    admission/removal call sites — not wired into ChuteResource's
     own internal queue. It approximates real ordering with the same rule
     push_dispatch_process itself follows: normal deposits append to the
     back, rush deposits jump ahead of every non-rush entry but queue up
     FIFO relative to any rush entries already pending (mirroring
     chute.push_rush_entry() semantics). It does NOT know about
     frozen-zone-driven reordering interactions with the PULL side —
-    that logic lives entirely inside KanbanChuteResource — so this is
+    that logic lives entirely inside ChuteResource — so this is
     an approximation of physical queue position, same spirit as
     ExoticSupermarketTracker's own "not the real resource" caveat.
 
@@ -42,17 +42,17 @@ class PushChuteTracker:
 
     def __init__(self):
         self._next_id = 1
-        self.pending: dict[str, list[dict]] = {}   # line -> [{"entry_id","sachnummer","t_entered","rush"}], oldest-first
+        self.pending: dict[str, list[dict]] = {}   # line -> [{"entry_id","product_number","t_entered","rush"}], oldest-first
         self.log: list[PushChuteLogEntry] = []
 
-    def deposit(self, line_name: str, sachnummer: str, t: float, rush: bool = False) -> int:
-        """Record one push chunk entering `line_name`'s Chute queue.
+    def deposit(self, line_name: str, product_number: str, t: float, rush: bool = False) -> int:
+        """Record one push_card entering `line_name`'s Chute queue.
         Returns the entry_id assigned (unique across the whole run, not
         just this line) — not currently needed by callers, but handy for
         tests/debugging."""
         entry_id = self._next_id
         self._next_id += 1
-        item = {"entry_id": entry_id, "sachnummer": sachnummer, "t_entered": t, "rush": rush}
+        item = {"entry_id": entry_id, "product_number": product_number, "t_entered": t, "rush": rush}
         lst = self.pending.setdefault(line_name, [])
         if rush:
             # Insert after any rush entries already pending, ahead of every
@@ -68,7 +68,7 @@ class PushChuteTracker:
             lst.append(item)
         self.log.append(PushChuteLogEntry(
             t=t, line=line_name, kind="deposit", entry_id=entry_id,
-            sachnummer=sachnummer, rush=rush,
+            product_number=product_number, rush=rush,
         ))
         return entry_id
 

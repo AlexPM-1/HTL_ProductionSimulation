@@ -5,7 +5,7 @@ part_lifecycle(), process_part_at_station(), inspection_outcome(),
 run_lochfilter_drs_production(), _draw_from_chute(),
 _sample_processing_time(), _safe_attr_name(). Called by
 sim.produce.run_order.run_one_order() and
-sim.produce.run_kanban_batch.run_one_kanban_batch().
+sim.produce.run_pull_batch.run_one_pull_batch().
 
 Everything a single Part needs to travel through one line's stations,
 including the FIFO-chute material draw and the parallel Lochfilter/DRS
@@ -19,7 +19,7 @@ from typing import Optional, TYPE_CHECKING
 from sim.resources.environment import SimEnvironment
 from sim.resources.part import Part
 from sim.resources.stations import StationResource, BufferResource
-from sim.resources.inventory import InventoryResource, ChuteResource
+from sim.resources.inventory import InventoryResource, MaterialChuteResource
 from domain.products import ProductClass
 
 if TYPE_CHECKING:
@@ -120,7 +120,7 @@ def _sample_processing_time(
 # 1:1 with the main-line order quantity, on the Einsteller's command.
 #
 # Replenishment: a FIFO chute is NOT fed by a continuous arrival process.
-# Every withdrawal from a ChuteResource lane is followed by a level check:
+# Every withdrawal from a MaterialChuteResource lane is followed by a level check:
 # once the chute's own current_fill has dropped to (or below)
 # trigger_amount_left, the SAME generator that triggered it immediately
 # pulls a FIXED amount — replenish_qty_pcs (= ReplenishAmount packs x
@@ -133,7 +133,7 @@ def _sample_processing_time(
 
 def _draw_from_chute(
     sim_env: SimEnvironment,
-    ch: "ChuteResource",
+    ch: "MaterialChuteResource",
     qty: int = 1,
 ):
     """
@@ -230,7 +230,7 @@ def run_lochfilter_drs_production(
     from) the main-line order that will consume them.
 
     Launched (fire-and-forget, via env.process()) by run_one_order() /
-    run_one_kanban_batch() alongside the main-line parts, for orders whose
+    run_one_pull_batch() alongside the main-line parts, for orders whose
     product_class is STAB_LOCHFILTER or DRS. Does nothing for any other
     product_class.
 
@@ -268,7 +268,7 @@ def run_lochfilter_drs_production(
         if verbose:
             print(
                 f"  ⚠ {line_name}: no {station_name!r} station resource — "
-                f"skipping parallel production for {order_rec.sachnummer}."
+                f"skipping parallel production for {order_rec.product_number}."
             )
         return
 
@@ -283,7 +283,7 @@ def run_lochfilter_drs_production(
         print(
             f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "
             f"Einsteller command — start parallel {station_name} production, "
-            f"{order_rec.quantity} pcs for {order_rec.sachnummer!r}"
+            f"{order_rec.quantity} pcs for {order_rec.product_number!r}"
         )
 
     for _ in range(order_rec.quantity):
@@ -356,7 +356,7 @@ def process_part_at_station(
     OEE loss (CombinedProductionLoss)
     ----------------------------------
     If `sim_env` carries an `oee_tracker` (sim.oee.OEELossTracker —
-    attached by sim.runner.run_mixed() as `kenv.oee_tracker`;
+    attached by sim.runner.run_mixed() as `menv.oee_tracker`;
     absent/None for callers that don't use it), this looks up
     `line_name`'s already-drawn value for today via
     `oee_tracker.get_current(line_name)` — a read-only lookup, it never

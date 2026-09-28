@@ -26,7 +26,7 @@ class PackageTracker:
     """
     line_name:      str
     line_id:        int
-    sachnummer:     str
+    product_number:     str
     kunde:          str
     product_class:  str
     package_size:   int
@@ -71,7 +71,7 @@ class PackageTracker:
                 event_type="job",
                 start_s=round(start, 3),
                 end_s=round(end, 3),
-                sachnummer=self.sachnummer,
+                product_number=self.product_number,
                 kunde=self.kunde,
                 product_class=self.product_class,
                 package_size=self.package_size,

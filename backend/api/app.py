@@ -22,9 +22,9 @@ from domain.config import load_config, SimConfig
 # Paths — overridable via environment variables so different environments
 # can point at different workbooks without code changes.
 # ---------------------------------------------------------------------------
-EXCEL_PATH = os.environ.get("SIM_EXCEL_PATH", "domain/ProductionPlanning_v6.xlsx")
-SETUP_XLSX_PATH = os.environ.get("SIM_SETUP_XLSX_PATH", "domain/HTL_setup_times.xlsx")
-PRODUCT_MASTER_PATH = os.environ.get("SIM_PRODUCT_MASTER_PATH", "domain/product_master.xlsx")
+EXCEL_PATH = os.environ.get("SIM_EXCEL_PATH", "domain/ProductionPlanningConfig.xlsx")
+SETUP_XLSX_PATH = os.environ.get("SIM_SETUP_XLSX_PATH", "domain/HTLSetupTimes.xlsx")
+PRODUCT_MASTER_PATH = os.environ.get("SIM_PRODUCT_MASTER_PATH", "domain/ProductMaster.xlsx")
 
 CORS_ORIGINS = os.environ.get(
     "SIM_CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
@@ -67,7 +67,7 @@ def health():
 def get_parameters(reload: bool = False):
     """Parameters used to populate the frontend's settings sidebar."""
     from fastapi import HTTPException
-    from domain.constants import DEFAULT_N_WORKERS, DAY_START_HOUR, PUSH_CHUNK_SIZE
+    from domain.constants import DEFAULT_N_WORKERS, DAY_START_HOUR, PUSH_CARD_SIZE
     from reports.kpi.by_class import build_class_product_sets
 
     if reload:
@@ -77,11 +77,11 @@ def get_parameters(reload: bool = False):
     except FileNotFoundError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    kanban_products, push_products = build_class_product_sets(c)
+    pull_products, push_products = build_class_product_sets(c)
 
     return {
         "lines": c.line_names,
-        "n_kanban_products": len(kanban_products),
+        "n_pull_products": len(pull_products),
         "n_push_products": len(push_products),
         "worker_options": [1, 2],
         "default_workers": DEFAULT_N_WORKERS,
@@ -92,7 +92,7 @@ def get_parameters(reload: bool = False):
         "crew_options": list(range(1, max(len(c.line_names), 1) + 1)),
         "default_n_crews": 2,
         "default_day_start_hour": DAY_START_HOUR,
-        "default_push_chunk_size": PUSH_CHUNK_SIZE,
+        "default_push_card_size": PUSH_CARD_SIZE,
         # Whether the loaded workbook's "Shifts" sheet actually configured
         # any shift-time definitions — see domain.config.ShiftCalendar. If
         # False, every line/every time is treated as always-on and

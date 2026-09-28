@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sim.resources.cards import KanbanCard
+from sim.resources.cards import PullCard
 
 
 @dataclass
@@ -18,7 +18,7 @@ class CollectionBoxResource:
     """
     Per-line box where withdrawn cards simply accumulate as they arrive,
     until the next periodic emptying (cadence =
-    cfg.kanban_timing.collection_box_emptying_min, default 30 min — read
+    cfg.pull_timing_config.collection_box_emptying_min, default 30 min — read
     from config, not hardcoded here).
 
     Emptying is driven by
@@ -27,13 +27,13 @@ class CollectionBoxResource:
     BatchCollectorResource.
     """
     line_id: int
-    cards: list[KanbanCard] = field(default_factory=list)
+    cards: list[PullCard] = field(default_factory=list)
     last_emptied_at: float = 0.0
 
-    def add(self, card: KanbanCard) -> None:
+    def add(self, card: PullCard) -> None:
         self.cards.append(card)
 
-    def empty(self, t: float) -> list[KanbanCard]:
+    def empty(self, t: float) -> list[PullCard]:
         """Remove and return every card currently in the box, in arrival order."""
         emptied, self.cards = self.cards, []
         self.last_emptied_at = t
@@ -53,18 +53,18 @@ class BatchCollectorResource:
     Per-line, per-product accumulation buckets that sit between the
     Collection Box and the Kanban Chute. A bucket's cards are released
     together, as one batch, once its count reaches that product's
-    CardsToTrigger threshold (from cfg.kanban_cards — a per-PRODUCT
+    CardsToTrigger threshold (from cfg.pull_cards — a per-PRODUCT
     setting, not per-line).
 
     `cards_to_trigger` is shared (read-only) across all 3 lines' collector
-    instances — it's the same {sachnummer: threshold} dict built once in
-    build_kanban_environment() from cfg.kanban_cards.
+    instances — it's the same {product_number: threshold} dict built once in
+    build_mixed_environment() from cfg.pull_cards.
     """
     line_id: int
     cards_to_trigger: dict[str, int]
-    buckets: dict[str, list[KanbanCard]] = field(default_factory=dict)
+    buckets: dict[str, list[PullCard]] = field(default_factory=dict)
 
-    def add(self, card: KanbanCard) -> None:
+    def add(self, card: PullCard) -> None:
         self.buckets.setdefault(card.product_type, []).append(card)
 
     def is_ready(self, product_type: str) -> bool:
@@ -74,7 +74,7 @@ class BatchCollectorResource:
             return False
         return len(self.buckets.get(product_type, [])) >= threshold
 
-    def pop_batch(self, product_type: str) -> list[KanbanCard]:
+    def pop_batch(self, product_type: str) -> list[PullCard]:
         """
         Pop exactly `cards_to_trigger[product_type]` cards off the front
         of that product's bucket (FIFO) and return them, leaving any

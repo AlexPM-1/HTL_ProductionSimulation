@@ -119,7 +119,7 @@ def build_gantt_payload(
 
     Every non-idle/off_shift segment's dict carries "crewId", a straight
     pass-through of the source ScheduleEvent's crew_id (set by
-    sim.runner's crew wiring), same as simClass.
+    sim.runner's crew wiring), same as productionType.
     """
     divisor = TIME_UNIT_DIVISORS[time_unit]
 
@@ -168,18 +168,18 @@ def build_gantt_payload(
         cursor = 0.0
         for e in line_events:
             _emit_idle_gap(line, cursor, e.start_s)
-            bucket = e.sim_class if e.sim_class in ("pull", "push") else "unclassified"
+            bucket = e.production_type if e.production_type in ("pull", "push") else "unclassified"
             class_duration[line][bucket] += max(e.duration_s, 0.0)
             seg = {
                 "type": e.event_type,
                 "start": round(e.start_s / divisor, 4),
                 "duration": round(max(e.duration_s, 0.0) / divisor, 4),
-                "simClass": e.sim_class,
+                "productionType": e.production_type,
                 "crewId": e.crew_id,
             }
             if e.event_type == "job":
                 seg.update({
-                    "sachnummer": e.sachnummer,
+                    "product_number": e.product_number,
                     "kunde": e.kunde,
                     "productClass": e.product_class,
                     "packageSize": e.package_size,
@@ -188,8 +188,8 @@ def build_gantt_payload(
                 })
             else:
                 seg.update({
-                    "fromSku": e.from_sachnummer,
-                    "toSku": e.to_sachnummer,
+                    "fromSku": e.from_product_number,
+                    "toSku": e.to_product_number,
                     "workers": e.n_workers,
                     "note": e.note,
                 })

@@ -8,15 +8,15 @@ build.py.
 
     part.py         Part
     stations.py     StationResource, BufferResource
-    inventory.py    InventoryResource, ChuteResource (material FIFO chute)
+    inventory.py    InventoryResource, MaterialChuteResource (material FIFO chute)
     line.py         ProductionLine
-    cards.py        KanbanCard
+    cards.py        PullCard
     supermarket.py  SupermarketResource
     collector.py    CollectionBoxResource, BatchCollectorResource
-    chute.py        ChuteEntry, KanbanChuteResource (admission queue)
+    chute.py        ChuteEntry, ChuteResource (admission queue)
     gate.py         LinePriorityGate
-    environment.py  SimEnvironment, KanbanSimEnvironment
-    build.py        build_environment, build_kanban_environment
+    environment.py  SimEnvironment, MixedSimEnvironment
+    build.py        build_environment, build_mixed_environment
 
 Import from the specific submodule you need (see each module's header)
 rather than relying on re-exports here.

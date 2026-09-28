@@ -16,6 +16,6 @@ The pull (Kanban) half of Movement 1:
     day_boundary.py      day_boundary_process(), print_restmenge_report(),
                          _pipeline_backlog_cards(), _PIPELINE_STATES
                          — used by bootstrap.py
-    bootstrap.py        start_kanban_simulation(), the pull-side launcher
+    bootstrap.py        start_mixed_simulation(), the pull-side launcher
                          — used by sim/runner.py
 """

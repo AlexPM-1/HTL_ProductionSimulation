@@ -1,7 +1,7 @@
 """
-sim/produce/run_kanban_batch.py
+sim/produce/run_pull_batch.py
 =================================
-run_one_kanban_batch() and _make_kanban_order_record() — the Kanban
+run_one_pull_batch() and _make_pull_order_record() — the Kanban
 (pull) side counterpart of sim.produce.run_order.run_one_order(). Both
 are called by sim.drain.pull_turn._run_one_pull_card(), which imports
 them directly from this module.
@@ -13,9 +13,9 @@ from typing import Optional, TYPE_CHECKING
 
 import simpy
 
-from sim.resources.environment import KanbanSimEnvironment
+from sim.resources.environment import MixedSimEnvironment
 from sim.resources.stations import StationResource, BufferResource
-from domain.orders import OrderRecord, KanbanBatchSpec
+from domain.orders import OrderRecord, PullBatchSpec
 from domain.products import _active_buffer_sequence, ProductClass
 from telemetry.packaging import PackageTracker
 from telemetry.recorder import Recorder
@@ -31,11 +31,11 @@ if TYPE_CHECKING:
     from sim.context import RunContext
 
 
-def run_one_kanban_batch(
-    kenv: KanbanSimEnvironment,
+def run_one_pull_batch(
+    menv: MixedSimEnvironment,
     line_id: int,
-    current_rec: "OrderRecord | KanbanBatchSpec | None",
-    order_rec: KanbanBatchSpec,
+    current_rec: "OrderRecord | PullBatchSpec | None",
+    order_rec: PullBatchSpec,
     n_workers: int,
     on_finish,
     verbose: bool = True,
@@ -43,7 +43,7 @@ def run_one_kanban_batch(
 ):
     """
     SimPy generator - run ONE Kanban-released batch to completion on
-    *line_id*, and return the KanbanBatchSpec to use as `current_rec` for
+    *line_id*, and return the PullBatchSpec to use as `current_rec` for
     the NEXT batch's changeover lookup.
 
     This mirrors sim.produce.run_order.run_one_order()'s thin
@@ -57,7 +57,7 @@ def run_one_kanban_batch(
 
     The normal "product not feasible on this line" case is already
     filtered out one level up, in sim.drain.pull_turn._run_one_pull_card
-    (via _make_kanban_order_record below), which pushes the batch back
+    (via _make_pull_order_record below), which pushes the batch back
     onto the Kanban Chute for a retry before this function is ever
     called. What remains here is a stricter, should-never-happen guard:
     the product IS feasible per the catalogue, but this SimEnvironment's
@@ -65,7 +65,7 @@ def run_one_kanban_batch(
     objects (e.g. an inconsistency between the product matrix and the
     loaded workbook). In that case the batch is logged and dropped
     (current_rec returned unchanged) rather than silently lost with no
-    trace — this function has no access to the raw KanbanCard list to
+    trace — this function has no access to the raw PullCard list to
     requeue them, only the caller (_run_one_pull_card) does.
 
     event_log: caller-owned list[telemetry.records.ScheduleEvent], same
@@ -81,21 +81,21 @@ def run_one_kanban_batch(
     push-model job segment. Optional — omit it and the batch still runs,
     it just won't be represented on a Gantt chart.
     """
-    env = kenv.env
-    cfg = kenv.cfg
-    line = kenv.lines[line_id - 1]
+    env = menv.env
+    cfg = menv.cfg
+    line = menv.lines[line_id - 1]
     line_name = line.line_name
     rework_limit = cfg.inspection[line_name].rework_loop_limit
 
     # ── 1. Changeover (reused, unchanged) ─────────────────────────────────
-    # Pass a Recorder, not kenv itself, so changeover()'s internal
+    # Pass a Recorder, not menv itself, so changeover()'s internal
     # `sim_env.log_event(...)` call for the "setup" ScheduleEvent lands in
     # *this* run's caller-owned `event_log` list (same one PackageTracker
-    # writes "job" segments into below) instead of KanbanSimEnvironment's
+    # writes "job" segments into below) instead of MixedSimEnvironment's
     # own, disconnected internal event store — see telemetry.recorder.Recorder.
     yield env.process(
         changeover(
-            Recorder(kenv, event_log=event_log),
+            Recorder(menv, event_log=event_log),
             line_id, current_rec, order_rec, n_workers, verbose,
         )
     )
@@ -112,7 +112,7 @@ def run_one_kanban_batch(
 
     if missing or not station_list:
         print(f"  ⚠ {line_name}: cannot resolve routing for Kanban batch "
-              f"{order_rec.sachnummer!r} (missing stations: {missing}) — "
+              f"{order_rec.product_number!r} (missing stations: {missing}) — "
               f"re-queuing batch on the Kanban Chute for retry.")
         return current_rec
 
@@ -127,14 +127,14 @@ def run_one_kanban_batch(
     if verbose:
         print(f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "
               f"Kanban PRODUCTION START — {order_rec.quantity} × "
-              f"{order_rec.sachnummer!r}  |  "
+              f"{order_rec.product_number!r}  |  "
               f"route: {' → '.join(order_rec.station_sequence)}")
 
     # Einsteller command for Lochfilter/DRS sub-assembly — reused,
     # unchanged, fire-and-forget exactly as in run_one_order().
     if order_rec.product_class in (ProductClass.STAB_LOCHFILTER, ProductClass.DRS):
         env.process(
-            run_lochfilter_drs_production(kenv, line_id, order_rec, verbose=verbose)
+            run_lochfilter_drs_production(menv, line_id, order_rec, verbose=verbose)
         )
 
     material_stored_types = _material_stored_types(order_rec.product_class)
@@ -150,7 +150,7 @@ def run_one_kanban_batch(
         pkg_tracker = PackageTracker(
             line_name=line_name,
             line_id=line_id,
-            sachnummer=order_rec.sachnummer,
+            product_number=order_rec.product_number,
             kunde=order_rec.kunde,
             product_class=order_rec.product_class,
             package_size=cfg.packaging.package_size,
@@ -164,14 +164,14 @@ def run_one_kanban_batch(
 
     part_processes: list[simpy.Process] = []
     for _ in range(order_rec.quantity):
-        part = kenv.create_part(
-            product_type  = order_rec.sachnummer,
+        part = menv.create_part(
+            product_type  = order_rec.product_number,
             product_class = order_rec.product_class,
             line_id       = line_id,
         )
         proc = env.process(
             part_lifecycle(
-                kenv, part, station_list, buffer_list, rework_limit, line_name,
+                menv, part, station_list, buffer_list, rework_limit, line_name,
                 material_stored_types=material_stored_types,
                 verbose=False,
                 on_finish=_on_finish,
@@ -187,38 +187,38 @@ def run_one_kanban_batch(
         pkg_tracker.flush(env.now)
 
     if verbose:
-        passed = sum(1 for p in kenv.parts_out
-                     if p.product_type == order_rec.sachnummer and p.status == "passed"
+        passed = sum(1 for p in menv.parts_out
+                     if p.product_type == order_rec.product_number and p.status == "passed"
                      and p.line_id == line_id)
         print(f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "
-              f"Kanban batch {order_rec.sachnummer!r} COMPLETE "
+              f"Kanban batch {order_rec.product_number!r} COMPLETE "
               f"(cumulative line passed so far: {passed})")
 
     return order_rec
 
 
-def _make_kanban_order_record(rt: "RunContext", line_name: str, product_type: str,
-                               quantity: int) -> Optional[KanbanBatchSpec]:
+def _make_pull_order_record(ctx: "RunContext", line_name: str, product_type: str,
+                               quantity: int) -> Optional[PullBatchSpec]:
     """
-    Build the (duck-typed) KanbanBatchSpec run_one_kanban_batch() needs,
+    Build the (duck-typed) PullBatchSpec run_one_pull_batch() needs,
     from the domain.products catalogue. Returns None if the product turns
     out not to be feasible on this line (shouldn't happen — build_kanban_
     environment only creates a (line, product) Supermarket for eligible
     products — but checked defensively).
 
     This is NOT the customer-facing OrderRecordPull tracked in
-    kenv.order_registry (see SimEnvironment.create_order()) — it's the
+    menv.order_registry (see SimEnvironment.create_order()) — it's the
     internal "what to produce" spec for one batch, so it uses the
-    dedicated domain.orders.KanbanBatchSpec rather than OrderRecord (see
+    dedicated domain.orders.PullBatchSpec rather than OrderRecord (see
     that class's docstring for why the two are kept separate).
     """
-    info = rt.product_info(product_type)
+    info = ctx.product_info(product_type)
     line_class = info.lines.get(line_name)
     if line_class is None or not line_class.station_names:
         return None
-    return KanbanBatchSpec(
+    return PullBatchSpec(
         period_label="Kanban",
-        sachnummer=product_type,
+        product_number=product_type,
         kunde=info.kunde,
         product_class=info.product_class,
         quantity=quantity,

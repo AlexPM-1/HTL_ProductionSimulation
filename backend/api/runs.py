@@ -1,13 +1,13 @@
 """
 api/runs.py
 =============
-RunStore: a single-slot "last completed run wins" cache, holding the kenv/
+RunStore: a single-slot "last completed run wins" cache, holding the menv/
 cfg produced by the most recent POST /api/simulate_mixed (api/legacy.py).
 Every /api/mixed/* endpoint (api/legacy.py, api/routes_movement.py,
 api/routes_policy.py) reads the active run through run_store.require()
-or run_store.kenv.
+or run_store.menv.
 
-day_start_hour/day_length_s are cached alongside kenv/cfg because they're
+day_start_hour/day_length_s are cached alongside menv/cfg because they're
 per-request inputs to POST /api/simulate_mixed (not fixed constants), and
 day_window_s() below needs the values actually used for the cached run.
 """
@@ -24,25 +24,25 @@ from domain.config import SimConfig
 
 @dataclass
 class RunStore:
-    kenv: object = None
+    menv: object = None
     cfg: Optional[SimConfig] = None
     day_start_hour: Optional[int] = None
     day_length_s: Optional[float] = None
 
-    def set(self, kenv, cfg: SimConfig, day_start_hour: int, day_length_s: float) -> None:
-        self.kenv = kenv
+    def set(self, menv, cfg: SimConfig, day_start_hour: int, day_length_s: float) -> None:
+        self.menv = menv
         self.cfg = cfg
         self.day_start_hour = day_start_hour
         self.day_length_s = day_length_s
 
     def require(self) -> tuple:
         """Every /api/mixed/* endpoint needs a prior POST /api/simulate_mixed call."""
-        if self.kenv is None or self.cfg is None:
+        if self.menv is None or self.cfg is None:
             raise HTTPException(
                 status_code=409,
                 detail="No mixed simulation has been run yet. Call POST /api/simulate_mixed first.",
             )
-        return self.kenv, self.cfg
+        return self.menv, self.cfg
 
     def day_window_s(self, day_index: Optional[int], hour: Optional[int]) -> Optional[tuple[float, float]]:
         """

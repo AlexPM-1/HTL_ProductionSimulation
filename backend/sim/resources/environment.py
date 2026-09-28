@@ -2,9 +2,9 @@
 sim/resources/environment.py
 =============================
 Top-level simulation environment holders: SimEnvironment (push model)
-and KanbanSimEnvironment (adds the 4 Kanban-loop resource dicts).
+and MixedSimEnvironment (adds the 4 Kanban-loop resource dicts).
 
-Built by sim.resources.build.build_environment()/build_kanban_environment();
+Built by sim.resources.build.build_environment()/build_mixed_environment();
 read/written throughout sim.produce, sim.fill, and sim.drain.
 """
 
@@ -24,11 +24,11 @@ from telemetry.records import ScheduleEvent
 
 from sim.resources.part import Part
 from sim.resources.line import ProductionLine
-from sim.resources.inventory import InventoryResource, ChuteResource
-from sim.resources.cards import KanbanCard
+from sim.resources.inventory import InventoryResource, MaterialChuteResource
+from sim.resources.cards import PullCard
 from sim.resources.supermarket import SupermarketResource
 from sim.resources.collector import CollectionBoxResource, BatchCollectorResource
-from sim.resources.chute import KanbanChuteResource
+from sim.resources.chute import ChuteResource
 
 
 # ===========================================================================
@@ -58,14 +58,14 @@ class SimEnvironment:
                 or OrderRecordPush ever created (both subclasses of
                 OrderRecord — see domain.orders), for BOTH push and pull
                 orders (deliberately kept here on the base class, not on
-                KanbanSimEnvironment, so a mixed run shares ONE id
+                MixedSimEnvironment, so a mixed run shares ONE id
                 sequence / ONE lookup table across both order types
                 instead of two disjoint ones). Populated by
                 create_order() below; read back by reports that need to
-                join an order against the KanbanCard.history entries or
+                join an order against the PullCard.history entries or
                 GateActivityEntry rows it produced.
     order_counter : global incrementing ID, mirrors part_counter/
-                KanbanSimEnvironment.card_counter
+                MixedSimEnvironment.card_counter
     event_log : list of ScheduleEvent (see telemetry/records.py) — every
                 changeover and finished package, across all lines, in the
                 order they occur. Populated by sim.produce (changeover()
@@ -79,10 +79,10 @@ class SimEnvironment:
                 row group); e.g. inventories["Inv_nach_ECM"]["Lochfitler material"].
                 Covers Inv_nach_ECM (3 lanes), Inv_nach_Loch, Inv_nach_DRS,
                 Inv_nach_HTL, etc.
-    chutes : dict[chute_name → dict[stored_type → ChuteResource]]
+    chutes : dict[chute_name → dict[stored_type → MaterialChuteResource]]
                 mirrors cfg.chutes structurally (one entry per Excel
                 row group); e.g. chutes["Chu_vor_HTL3"]["Lochfilter"].
-    chutes_by_station : dict[station → dict[stored_type → ChuteResource]]
+    chutes_by_station : dict[station → dict[stored_type → MaterialChuteResource]]
                 convenience index for process logic — the station a
                 chute feeds (e.g. "HTL3", "Lochfilter", "DRS") maps
                 straight to its lane(s), without needing to know the Excel
@@ -100,12 +100,12 @@ class SimEnvironment:
     order_counter: int          = 0
     event_log: list[ScheduleEvent] = field(default_factory=list)
     inventories: dict[str, dict[str, InventoryResource]] = field(default_factory=dict)
-    chutes: dict[str, dict[str, ChuteResource]] = field(default_factory=dict)
-    chutes_by_station: dict[str, dict[str, ChuteResource]] = field(default_factory=dict)
+    chutes: dict[str, dict[str, MaterialChuteResource]] = field(default_factory=dict)
+    chutes_by_station: dict[str, dict[str, MaterialChuteResource]] = field(default_factory=dict)
 
-    def chute_for(self, station: str, stored_type: str) -> Optional[ChuteResource]:
+    def chute_for(self, station: str, stored_type: str) -> Optional[MaterialChuteResource]:
         """
-        Convenience lookup: the ChuteResource feeding *station* that
+        Convenience lookup: the MaterialChuteResource feeding *station* that
         stocks *stored_type* (e.g. chute_for("HTL3", "Lochfilter")).
         Returns None if no such lane exists (e.g. HTL5/HTL6 have no
         Lochfilter/DRS lanes — only "Standard").
@@ -202,14 +202,14 @@ class SimEnvironment:
 
     def next_order_id(self) -> int:
         """Thread-safe (single-thread SimPy) unique, sequential order ID —
-        mirrors next_part_id() / KanbanSimEnvironment.next_card_id()."""
+        mirrors next_part_id() / MixedSimEnvironment.next_card_id()."""
         self.order_counter += 1
         return self.order_counter
 
     def create_order(
         self,
         kind: str,
-        sachnummer: str,
+        product_number: str,
         kunde: str,
         product_class: str,
         quantity: int,
@@ -226,8 +226,8 @@ class SimEnvironment:
         (picked via `kind`, "pull" | "push"), register it in
         order_registry, and return it. order_id is permanent and
         sequential — callers should hold onto and reuse this same
-        OrderRecord (or, for a chunked push order, copy its order_id onto
-        every chunk) rather than minting a fresh id per chunk. Mirrors
+        OrderRecord (or, for a split push order, copy its order_id onto
+        every push_card) rather than minting a fresh id per push_card. Mirrors
         create_part()/create_card(); lives on the base class so ONE
         counter/registry is shared across push and pull orders alike.
 
@@ -249,7 +249,7 @@ class SimEnvironment:
         order = cls(
             order_id=self.next_order_id(),
             period_label=period_label,
-            sachnummer=sachnummer,
+            product_number=product_number,
             kunde=kunde,
             product_class=product_class,
             quantity=quantity,
@@ -305,7 +305,7 @@ class SimEnvironment:
 #
 # Everything below is the Kanban pull-system layer. Nothing above this
 # line is touched by any of it — the push-model path (Part /
-# StationResource / BufferResource / InventoryResource / ChuteResource /
+# StationResource / BufferResource / InventoryResource / MaterialChuteResource /
 # ProductionLine / SimEnvironment / build_environment()) is reused
 # completely unchanged.
 #
@@ -315,29 +315,29 @@ class SimEnvironment:
 #                            blocks on `yield store.get()` until
 #                            production deposits a batch — no separate
 #                            stockout/skip branch needed.
-#   Card identity          : KanbanCard.card_id is permanent, assigned
-#                            once by KanbanSimEnvironment.create_card()
+#   Card identity          : PullCard.card_id is permanent, assigned
+#                            once by MixedSimEnvironment.create_card()
 #                            and reused every loop; the full transition
 #                            history lives on the card itself.
 #   Partial packs          : SupermarketResource.pcs_partial accumulates
-#                            leftover pieces; only a *whole* batch_size
+#                            leftover pieces; only a *whole* card_size
 #                            chunk ever becomes a card in `store` — a
 #                            partial pack is never withdrawable.
-#   Independent process    : SupermarketResource / KanbanCard etc. stand
+#   Independent process    : SupermarketResource / PullCard etc. stand
 #                            entirely on their own — sim.produce's
 #                            kanban process-logic module never needs to
 #                            import anything from sim.produce's
 #                            order-based (push) functions.
-#   Subclass               : KanbanSimEnvironment(SimEnvironment) — see
+#   Subclass               : MixedSimEnvironment(SimEnvironment) — see
 #                            class docstring below.
-#   Excel-driven timing    : cfg.kanban_timing (KanbanTimingConfig) is
+#   Excel-driven timing    : cfg.pull_timing_config (PullTimingConfig) is
 #                            threaded through unchanged from
 #                            domain.config; nothing here hardcodes the
 #                            15/30-min cadence.
 
 
 @dataclass
-class KanbanSimEnvironment(SimEnvironment):
+class MixedSimEnvironment(SimEnvironment):
     """
     Subclass of SimEnvironment adding the 4 Kanban-loop resource dicts
     plus a permanent card registry (a subclass rather than fields
@@ -347,14 +347,14 @@ class KanbanSimEnvironment(SimEnvironment):
 
     All 4 new dicts are keyed first by line_id (int, 1-based, matching
     ProductionLine.line_id) for O(1) per-line access from the Kanban
-    process generators (sim.produce.run_kanban_batch), which always
+    process generators (sim.produce.run_pull_batch), which always
     operate one line at a time.
 
     supermarkets      : dict[line_id -> dict[product_type -> SupermarketResource]]
     collection_boxes  : dict[line_id -> CollectionBoxResource]
     batch_collectors  : dict[line_id -> BatchCollectorResource]
-    kanban_chutes     : dict[line_id -> KanbanChuteResource]
-    card_registry     : dict[card_id -> KanbanCard] — every card ever
+    pull_chutes     : dict[line_id -> ChuteResource]
+    card_registry     : dict[card_id -> PullCard] — every card ever
                         created, for O(1) lookup/traceability (a future
                         cycle-time-per-card KPI reads a card's
                         `transitions` straight off here)
@@ -364,8 +364,8 @@ class KanbanSimEnvironment(SimEnvironment):
     supermarkets: dict[int, dict[str, SupermarketResource]] = field(default_factory=dict)
     collection_boxes: dict[int, CollectionBoxResource] = field(default_factory=dict)
     batch_collectors: dict[int, BatchCollectorResource] = field(default_factory=dict)
-    kanban_chutes: dict[int, KanbanChuteResource] = field(default_factory=dict)
-    card_registry: dict[int, KanbanCard] = field(default_factory=dict)
+    pull_chutes: dict[int, ChuteResource] = field(default_factory=dict)
+    card_registry: dict[int, PullCard] = field(default_factory=dict)
     card_counter: int = 0
 
     def next_card_id(self) -> int:
@@ -377,21 +377,21 @@ class KanbanSimEnvironment(SimEnvironment):
         self,
         product_type: str,
         line_id: int,
-        batch_size: int,
+        card_size: int,
         priority: str = "M",
-    ) -> KanbanCard:
+    ) -> PullCard:
         """
-        Factory method: create a new KanbanCard (starts 'in_supermarket'),
+        Factory method: create a new PullCard (starts 'in_supermarket'),
         register it in card_registry, and return it. card_id is
         permanent — callers should hold onto and reuse this same
-        KanbanCard instance for the rest of its circulating life, never
+        PullCard instance for the rest of its circulating life, never
         creating a fresh one for the same physical card slot.
         """
-        card = KanbanCard(
+        card = PullCard(
             card_id=self.next_card_id(),
             product_type=product_type,
             line_id=line_id,
-            batch_size=batch_size,
+            card_size=card_size,
             priority=priority,
         )
         card.record_transition("in_supermarket", self.env.now)
@@ -407,11 +407,11 @@ class KanbanSimEnvironment(SimEnvironment):
     def batch_collector_for(self, line_id: int) -> Optional[BatchCollectorResource]:
         return self.batch_collectors.get(line_id)
 
-    def kanban_chute_for(self, line_id: int) -> Optional[KanbanChuteResource]:
-        return self.kanban_chutes.get(line_id)
+    def pull_chute_for(self, line_id: int) -> Optional[ChuteResource]:
+        return self.pull_chutes.get(line_id)
 
-    def describe_kanban(self) -> None:
-        print("=== KanbanSimEnvironment (Kanban loop) ===")
+    def describe_pull(self) -> None:
+        print("=== MixedSimEnvironment (Kanban loop) ===")
         print(f"Cards created total : {self.card_counter}")
         for line in self.lines:
             lid = line.line_id
@@ -424,5 +424,5 @@ class KanbanSimEnvironment(SimEnvironment):
             print(f"    Supermarket (nonzero only, available/capacity): {nonzero}")
             print(f"    {self.collection_boxes.get(lid)}")
             print(f"    {self.batch_collectors.get(lid)}")
-            print(f"    {self.kanban_chutes.get(lid)}")
+            print(f"    {self.pull_chutes.get(lid)}")
         print("===========================================")

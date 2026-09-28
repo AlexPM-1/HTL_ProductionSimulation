@@ -3,10 +3,10 @@ sim/produce/changeover.py
 ==========================
 changeover() — whole-line setup barrier — plus its private helper
 _resolve_setup_time_s(). Called by sim.produce.run_order.run_one_order()
-and sim.produce.run_kanban_batch.run_one_kanban_batch().
+and sim.produce.run_pull_batch.run_one_pull_batch().
 
 Callers pass anything duck-typed as a sim_env (SimEnvironment,
-KanbanSimEnvironment, or telemetry.recorder.Recorder wrapping one) —
+MixedSimEnvironment, or telemetry.recorder.Recorder wrapping one) —
 this module only ever touches `.env`, `.lines`, `.cfg`, and
 `.log_event()`.
 """
@@ -42,7 +42,7 @@ def _resolve_setup_time_s(
     """
     Return (setup_seconds, source_description) for a changeover.
 
-    Lookup — TTNr-based table built by domain.config from HTL_setup_times.xlsx
+    Lookup — TTNr-based table built by domain.config from HTLSetupTimes.xlsx
     -------------------------------------------------------------------------------
     The workbook has one sheet per line (HTL3 / HTL5 / HTL6) with proper
     columns: Line | StartTTNr | EndTTNr | Setup_1MA | Setup_2MA.
@@ -70,19 +70,19 @@ def _resolve_setup_time_s(
     to_ttnr   = getattr(to_product,   "ttnr", None)
 
     # If ttnr is not set directly on the OrderRecord, resolve it from the
-    # sachnummer via the product_master lookup table (cfg.sachnummer_to_ttnr).
-    # Example: sachnummer "F00RC00967" → TTNr 967.
-    sachnummer_to_ttnr: dict = getattr(cfg, "sachnummer_to_ttnr", {})
+    # product_number via the product_master lookup table (cfg.product_number_to_ttnr).
+    # Example: product_number "F00RC00967" → TTNr 967.
+    product_number_to_ttnr: dict = getattr(cfg, "product_number_to_ttnr", {})
     if from_ttnr is None:
-        from_sachnr = getattr(from_product, "sachnummer", None)
-        from_ttnr   = sachnummer_to_ttnr.get(from_sachnr) if from_sachnr else None
+        from_product_number = getattr(from_product, "product_number", None)
+        from_ttnr   = product_number_to_ttnr.get(from_product_number) if from_product_number else None
     if to_ttnr is None:
-        to_sachnr = getattr(to_product, "sachnummer", None)
-        to_ttnr   = sachnummer_to_ttnr.get(to_sachnr) if to_sachnr else None
+        to_product_number = getattr(to_product, "product_number", None)
+        to_ttnr   = product_number_to_ttnr.get(to_product_number) if to_product_number else None
 
     if from_ttnr is None or to_ttnr is None:
-        from_id = getattr(from_product, "sachnummer", repr(from_product))
-        to_id   = getattr(to_product,   "sachnummer", repr(to_product))
+        from_id = getattr(from_product, "product_number", repr(from_product))
+        to_id   = getattr(to_product,   "product_number", repr(to_product))
         return (
             0.0,
             f"⚠ TTNr missing for {from_id!r} → {to_id!r} on {line_name} "
@@ -125,7 +125,7 @@ def changeover(
     """
     SimPy generator — insert a setup delay when the product on the line changes.
 
-    Called by run_one_order() / run_one_kanban_batch() (in turn called
+    Called by run_one_order() / run_one_pull_batch() (in turn called
     per-order by whatever runner is driving the line) AFTER all parts of
     the previous product have exited, i.e. this is a whole-line barrier
     (not a per-station setup).
@@ -139,27 +139,31 @@ def changeover(
     incoming_rec : OrderRecord about to start
     n_workers    : 1 or 2 Mitarbeiter performing the changeover — required,
                    no default here; the caller decides.
-                   1 → Setup_1MA column from HTL_setup_times.xlsx
-                   2 → Setup_2MA column from HTL_setup_times.xlsx
+                   1 → Setup_1MA column from HTLSetupTimes.xlsx
+                   2 → Setup_2MA column from HTLSetupTimes.xlsx
 
     Behaviour
     ---------
     No delay when:
       • current_rec is None  (first product ever — no previous setup)
-      • current_rec.sachnummer == incoming_rec.sachnummer  (same product)
+      • current_rec.product_number == incoming_rec.product_number  (same product)
 
     Otherwise: yield env.timeout(setup_time_s) and log the event.
 
-    After the timeout, line.current_product is set to incoming_rec.sachnummer.
+    After the timeout, line.current_product is set to incoming_rec.product_number.
+
+    The logged ScheduleEvent's order_id/production_type are stamped from
+    incoming_rec this is a "what started next" record, not a "what finished before" 
+    one, so current_rec's order is never stored here.
     """
     env  = sim_env.env
     line = sim_env.lines[line_id - 1]
 
     # No changeover needed
     if current_rec is None or (
-        current_rec.sachnummer == incoming_rec.sachnummer
+        current_rec.product_number == incoming_rec.product_number
     ):
-        line.current_product = incoming_rec.sachnummer
+        line.current_product = incoming_rec.product_number
         return   # generator exits without yielding — zero-cost
 
     setup_s, source = _resolve_setup_time_s(
@@ -173,7 +177,7 @@ def changeover(
     if verbose:
         print(
             f"  [t={env.now:10.1f}] {line.line_name}(L{line_id}): "
-            f"CHANGEOVER  {current_rec.sachnummer!r} → {incoming_rec.sachnummer!r}  "
+            f"CHANGEOVER  {current_rec.product_number!r} → {incoming_rec.product_number!r}  "
             f"| workers={n_workers}MA  | source: {source}"
         )
 
@@ -181,7 +185,7 @@ def changeover(
     if setup_s > 0.0:
         yield env.timeout(setup_s)
 
-    line.current_product = incoming_rec.sachnummer
+    line.current_product = incoming_rec.product_number
 
     if setup_s > 0.0:
         sim_env.log_event(ScheduleEvent(
@@ -191,13 +195,15 @@ def changeover(
             start_s         = t0,
             end_s           = env.now,
             n_workers       = n_workers,
-            from_sachnummer = current_rec.sachnummer,
-            to_sachnummer   = incoming_rec.sachnummer,
+            from_product_number = current_rec.product_number,
+            to_product_number   = incoming_rec.product_number,
             note            = source,
+            production_type = getattr(incoming_rec, "production_type", None),
+            order_id        = getattr(incoming_rec, "order_id", None),
         ))
 
     if verbose and setup_s > 0.0:
         print(
             f"  [t={env.now:10.1f}] {line.line_name}(L{line_id}): "
-            f"Changeover complete — line ready for {incoming_rec.sachnummer!r}"
+            f"Changeover complete — line ready for {incoming_rec.product_number!r}"
         )

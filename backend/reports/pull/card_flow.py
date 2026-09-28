@@ -4,12 +4,12 @@ reports/pull/card_flow.py
 Card Flow tab payload — build_card_flow_payload(). Shortfall data is
 computed separately by reports/pull/shortfall.build_shortfall_payload();
 callers that need both (e.g. api/legacy.py, reports/serialization.py's
-dump_kanban_events_json) call both functions and merge the results, so
+dump_pull_events_json) call both functions and merge the results, so
 each report module stays single-purpose.
 
-Dependency-free at runtime: KanbanSimEnvironment is only referenced
+Dependency-free at runtime: MixedSimEnvironment is only referenced
 under TYPE_CHECKING; this module only ever duck-types on
-kenv.card_registry / kenv.lines / KanbanCard.transitions.
+menv.card_registry / menv.lines / PullCard.transitions.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from reports.binning import TIME_UNIT_DIVISORS
 
 if TYPE_CHECKING:
     from domain.config import SimConfig  # noqa: F401  (not used directly, kept for parity)
-    from sim.resources.environment import KanbanSimEnvironment
+    from sim.resources.environment import MixedSimEnvironment
 
 TimeUnit = Literal["h", "min", "s"]
 
@@ -28,7 +28,7 @@ _DIVISORS = TIME_UNIT_DIVISORS
 
 # Canonical card-state ordering (matches the sequence documented on
 # SupermarketSnapshot / the record_transition() call sites in
-# sim/produce/run_kanban_batch.py and sim/fill/pull/*). Any state
+# sim/produce/run_pull_batch.py and sim/fill/pull/*). Any state
 # encountered that isn't in this list is appended afterwards, sorted, so
 # the payload never silently drops a state the sim logic gains later.
 _CANONICAL_CARD_STATES: list[str] = [
@@ -42,12 +42,12 @@ _CANONICAL_CARD_STATES: list[str] = [
 
 
 def build_card_flow_payload(
-    kenv: "KanbanSimEnvironment",
+    menv: "MixedSimEnvironment",
     n_bins: int | None = None,
     time_unit: TimeUnit = "h",
 ) -> dict:
     """
-    Flatten kenv.card_registry into a JSON-ready payload for the
+    Flatten menv.card_registry into a JSON-ready payload for the
     dashboard's Card Flow tab.
 
     Three things come out of this (shortfall data is a separate payload,
@@ -68,21 +68,21 @@ def build_card_flow_payload(
     transition at or before t. n_bins: if None (default), derived from
     sim_time_s so the bin width is always ~15 real-world minutes.
 
-    sim_time_s is read off kenv.env.now, so call this AFTER env.run(...)
+    sim_time_s is read off menv.env.now, so call this AFTER env.run(...)
     returns.
     """
     divisor = _DIVISORS[time_unit]
-    sim_time_s = kenv.env.now
+    sim_time_s = menv.env.now
     if n_bins is None:
         n_bins = max(1, round(sim_time_s / 600.0))
 
     line_names: dict[int, str] = {
-        line.line_id: line.line_name for line in kenv.lines
+        line.line_id: line.line_name for line in menv.lines
     }
 
     cards: list[dict] = []
     seen_states: set[str] = set()
-    for card_id, card in kenv.card_registry.items():
+    for card_id, card in menv.card_registry.items():
         transitions = [
             {"state": state, "t": round(t / divisor, 4)}
             for state, t in card.transitions
@@ -99,7 +99,7 @@ def build_card_flow_payload(
     states += sorted(seen_states - set(_CANONICAL_CARD_STATES))
 
     line_ids = sorted({
-        getattr(card, "line_id", None) for card in kenv.card_registry.values()
+        getattr(card, "line_id", None) for card in menv.card_registry.values()
         if getattr(card, "line_id", None) is not None
     })
 
@@ -111,7 +111,7 @@ def build_card_flow_payload(
             t_out = round(edge_s / divisor, 4)
             counts = {s: 0 for s in states}
             counts_by_line = {lid: {s: 0 for s in states} for lid in line_ids}
-            for card in kenv.card_registry.values():
+            for card in menv.card_registry.values():
                 current_state = None
                 for state, t in card.transitions:
                     if t > edge_s:

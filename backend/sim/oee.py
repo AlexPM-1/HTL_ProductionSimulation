@@ -18,7 +18,7 @@ sim.fill.push.exotic.ExoticSupermarketTracker uses for
 ExoticSlotSnapshot.
 
 Callers: sim.runner.run_mixed() constructs one OEELossTracker, attaches
-it onto kenv (kenv.oee_tracker) rather than threading it through as a
+it onto menv (menv.oee_tracker) rather than threading it through as a
 sim.produce.run_order.run_one_order() parameter — so run_one_order can
 read sim_env.oee_tracker.get_current(line_name) directly — and spawns
 oee_daily_process() as one of the run's top-level SimPy processes. See
@@ -41,7 +41,7 @@ from domain.config import OEEBinConfig
 from telemetry.records import OEELossDrawEntry
 
 if TYPE_CHECKING:
-    from sim.resources.environment import KanbanSimEnvironment
+    from sim.resources.environment import MixedSimEnvironment
 
 
 def sample_combined_production_loss(
@@ -169,7 +169,7 @@ class OEELossTracker:
 
 
 def oee_daily_process(
-    kenv: "KanbanSimEnvironment",
+    menv: "MixedSimEnvironment",
     tracker: OEELossTracker,
     log: list[OEELossDrawEntry],
     day_length_s: float,
@@ -187,10 +187,10 @@ def oee_daily_process(
     (draw_for_day() returns None for them) rather than logged as
     no-op entries.
     """
-    env = kenv.env
+    env = menv.env
     day_index = 0
     while True:
-        for line in kenv.lines:
+        for line in menv.lines:
             value = tracker.draw_for_day(line.line_name, day_index, rng)
             if value is not None:
                 log.append(OEELossDrawEntry(

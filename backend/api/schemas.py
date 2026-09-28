@@ -3,7 +3,7 @@ api/schemas.py
 =================
 Pydantic request models for api/legacy.py and api/routes_policy.py.
 Constant defaults (DEFAULT_N_WORKERS, DAY_START_HOUR, DAY_LENGTH_S,
-DRAIN_DAYS, PUSH_CHUNK_SIZE) are sourced from domain.constants, the
+DRAIN_DAYS, PUSH_CARD_SIZE) are sourced from domain.constants, the
 single canonical home for these values.
 """
 
@@ -13,7 +13,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from domain.constants import DEFAULT_N_WORKERS, DAY_START_HOUR, DAY_LENGTH_S, DRAIN_DAYS, PUSH_CHUNK_SIZE
+from domain.constants import DEFAULT_N_WORKERS, DAY_START_HOUR, DAY_LENGTH_S, DRAIN_DAYS, PUSH_CARD_SIZE
 
 
 class PushPolicyPatchRequest(BaseModel):
@@ -44,8 +44,8 @@ class SimulateMixedRequest(BaseModel):
     day_start_hour: int = Field(default=DAY_START_HOUR, ge=0, le=23)
     day_length_s: float = DAY_LENGTH_S
     drain_days: int = Field(default=DRAIN_DAYS, ge=0, le=7)
-    push_chunk_size: int = Field(
-        default=PUSH_CHUNK_SIZE, ge=1,
+    push_card_size: int = Field(
+        default=PUSH_CARD_SIZE, ge=1,
         description="Max pieces per push OrderRecord slice before class-1 "
                      "gets another chance to jump the gate queue.",
     )

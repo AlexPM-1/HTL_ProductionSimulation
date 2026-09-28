@@ -41,7 +41,7 @@ def run_one_order(
     """
     SimPy generator — run ONE OrderRecord to completion on *line_id*
     (changeover → resolve station/buffer lists → launch all parts →
-    wait for the batch to fully clear the line). Called once per chunk
+    wait for the batch to fully clear the line). Called once per push_card
     by run_push_turn() (sim/drain/push_turn.py), which persists
     `current_rec` per line across calls and passes it back in on the
     next call for the same line so changeover costs stay correct.
@@ -84,13 +84,13 @@ def run_one_order(
     if missing:
         print(
             f"  ⚠ {line_name}: stations {missing} not found in line resources "
-            f"for order {order_rec.sachnummer} — skipping order."
+            f"for order {order_rec.product_number} — skipping order."
         )
         return False
 
     if not station_list:
         print(
-            f"  ⚠ {line_name}: empty station list for {order_rec.sachnummer} "
+            f"  ⚠ {line_name}: empty station list for {order_rec.product_number} "
             f"— skipping order."
         )
         return False
@@ -112,7 +112,7 @@ def run_one_order(
     if missing_bufs:
         print(
             f"  ⚠ {line_name}: buffer resource(s) {missing_bufs} not found "
-            f"in line resources for order {order_rec.sachnummer} — BAS may "
+            f"in line resources for order {order_rec.product_number} — BAS may "
             f"not function correctly."
         )
 
@@ -120,13 +120,13 @@ def run_one_order(
         print(
             f"  ⚠ {line_name}: resolved buffer count ({len(buffer_list)}) != "
             f"station count - 1 ({len(station_list) - 1}) for "
-            f"{order_rec.sachnummer}.  BAS may not function correctly."
+            f"{order_rec.product_number}.  BAS may not function correctly."
         )
 
     if verbose:
         print(
             f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "
-            f"Releasing {order_rec.quantity} × {order_rec.sachnummer!r} "
+            f"Releasing {order_rec.quantity} × {order_rec.product_number!r} "
             f"({order_rec.kunde})  |  "
             f"route: {' → '.join(order_rec.station_sequence)}"
         )
@@ -135,7 +135,7 @@ def run_one_order(
     pkg_tracker = PackageTracker(
         line_name      = line_name,
         line_id        = line_id,
-        sachnummer     = order_rec.sachnummer,
+        product_number     = order_rec.product_number,
         kunde          = order_rec.kunde,
         product_class  = order_rec.product_class,
         package_size   = package_size,
@@ -156,7 +156,7 @@ def run_one_order(
     part_processes: list[simpy.Process] = []
     for _ in range(order_rec.quantity):
         part = sim_env.create_part(
-            product_type  = order_rec.sachnummer,
+            product_type  = order_rec.product_number,
             product_class = order_rec.product_class,
             line_id       = line_id,
         )
@@ -184,15 +184,15 @@ def run_one_order(
     if verbose:
         passed  = sum(
             1 for p in sim_env.parts_out
-            if p.product_type == order_rec.sachnummer and p.status == "passed"
+            if p.product_type == order_rec.product_number and p.status == "passed"
         )
         scrapped = sum(
             1 for p in sim_env.parts_out
-            if p.product_type == order_rec.sachnummer and p.status == "scrapped"
+            if p.product_type == order_rec.product_number and p.status == "scrapped"
         )
         print(
             f"  [t={env.now:10.1f}] {line_name}(L{line_id}): "
-            f"Order {order_rec.sachnummer!r} COMPLETE — "
+            f"Order {order_rec.product_number!r} COMPLETE — "
             f"passed={passed}  scrapped={scrapped}  "
             f"(line cleared, ready for changeover)"
             f"Note: {order_rec.note}"

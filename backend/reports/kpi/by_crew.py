@@ -3,22 +3,22 @@ reports/kpi/by_crew.py
 ========================
 Per-crew production summary — build_kpi_by_crew(). Complements
 reports/kpi/by_line.py and reports/kpi/by_class.py with a per-crew
-breakdown, sourced from kenv.gate_activity_log.
+breakdown, sourced from menv.gate_activity_log.
 """
 
 from __future__ import annotations
 
 
-def build_kpi_by_crew(kenv) -> dict:
+def build_kpi_by_crew(menv) -> dict:
     """
     Per-crew production summary — the "production of crew 1 / production
     of crew 2" counterpart to kpi_by_line/kpi_by_class, built from
-    kenv.gate_activity_log (every GateActivityEntry carries crew_id)
-    rather than from kenv.parts_out, since a GateActivityEntry already IS
-    one crew's one completed turn-unit (one pull card, or one push chunk)
+    menv.gate_activity_log (every GateActivityEntry carries crew_id)
+    rather than from menv.parts_out, since a GateActivityEntry already IS
+    one crew's one completed turn-unit (one pull card, or one push card)
     — no product-set membership lookup needed, unlike kpi_by_class.
 
-    Reads kenv.n_crews (set by sim.runner.run_mixed(n_crews=...)) so a crew that
+    Reads menv.n_crews (set by sim.runner.run_mixed(n_crews=...)) so a crew that
     happened to never get any work (e.g. more crews configured than lines
     exist) still gets a zeroed-out entry, instead of silently disappearing
     the way inferring crew count from "which crew_ids appear in the log"
@@ -39,10 +39,10 @@ def build_kpi_by_crew(kenv) -> dict:
           ...
         }
     """
-    gate_log = getattr(kenv, "gate_activity_log", None) or []
-    n_crews = getattr(kenv, "n_crews", None)
+    gate_log = getattr(menv, "gate_activity_log", None) or []
+    n_crews = getattr(menv, "n_crews", None)
     if n_crews is None:
-        # Defensive fallback for a kenv from a run predating kenv.n_crews
+        # Defensive fallback for a menv from a run predating menv.n_crews
         # being set — infer from whatever crew_ids actually appear rather
         # than 500ing (same "degrade gracefully" spirit as the other
         # getattr-guarded push artifacts in this package).
@@ -50,7 +50,7 @@ def build_kpi_by_crew(kenv) -> dict:
         seen.discard(None)
         n_crews = (max(seen) + 1) if seen else 0
 
-    id_to_name = {line.line_id: line.line_name for line in kenv.lines}
+    id_to_name = {line.line_id: line.line_name for line in menv.lines}
 
     result: dict = {}
     for crew_id in range(n_crews):

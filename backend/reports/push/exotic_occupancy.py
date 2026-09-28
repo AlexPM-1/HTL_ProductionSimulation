@@ -20,7 +20,7 @@ def exotic_products_at(snaps: list, edge_s: float) -> list[dict]:
     in the row at once instead of a single (occupant, n_cards) pair.
 
     Prefers ExoticSlotSnapshot.occupants, if present — a list of
-    {"sachnummer": ..., "n_cards": ...} entries (or (sachnummer, n_cards)
+    {"product_number": ..., "n_cards": ...} entries (or (product_number, n_cards)
     tuples) covering every product simultaneously occupying the row. This
     is the shape needed for a row that hasn't fully emptied before a
     different product starts filling it: a real physical row can (and
@@ -46,7 +46,7 @@ def exotic_products_at(snaps: list, edge_s: float) -> list[dict]:
         if raw:
             products = [
                 {
-                    "sachnummer": (o.get("sachnummer") if isinstance(o, dict) else o[0]),
+                    "product_number": (o.get("product_number") if isinstance(o, dict) else o[0]),
                     "push_count": (o.get("n_cards") if isinstance(o, dict) else o[1]),
                 }
                 for o in raw
@@ -57,7 +57,7 @@ def exotic_products_at(snaps: list, edge_s: float) -> list[dict]:
     if products is not None:
         return products
     if occupant is not None or n_cards:
-        return [{"sachnummer": occupant, "push_count": n_cards}]
+        return [{"product_number": occupant, "push_count": n_cards}]
     return []
 
 

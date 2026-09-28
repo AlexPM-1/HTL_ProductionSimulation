@@ -2,9 +2,9 @@
 telemetry/recorder.py
 ======================
 Recorder: the single write channel for a run's telemetry. Wraps a live
-KanbanSimEnvironment and exposes log_event() / record_supermarket() /
+MixedSimEnvironment and exposes log_event() / record_supermarket() /
 record_shortfall() for callers such as sim.produce.changeover and
-sim.produce.run_kanban_batch.run_one_kanban_batch to append
+sim.produce.run_pull_batch.run_one_pull_batch to append
 ScheduleEvent, SupermarketSnapshot, and ShortfallEvent records
 (telemetry.records) without touching the environment's internals
 directly.
@@ -17,8 +17,8 @@ from telemetry.records import ScheduleEvent, ShortfallEvent, SupermarketSnapshot
 
 class Recorder:
     """
-    Wraps a live KanbanSimEnvironment (`kenv`) only far enough to read
-    `env.now` and resolve line_id -> line_name — never mutates kenv,
+    Wraps a live MixedSimEnvironment (`menv`) only far enough to read
+    `env.now` and resolve line_id -> line_name — never mutates menv,
     never owns simulation logic. Every log list is caller-owned/optional,
     same by-reference pattern the original module-level lists used.
 
@@ -26,17 +26,17 @@ class Recorder:
     (or anything else) expects a `sim_env` with a `.log_event(event)`
     method: `log_event()` appends to this Recorder's own `event_log`, and
     `__getattr__` forwards everything else (`.env`, `.lines`, `.cfg`, ...)
-    straight through to the wrapped `kenv`.
+    straight through to the wrapped `menv`.
     """
 
     def __init__(
         self,
-        kenv,
+        menv,
         event_log: "list[ScheduleEvent] | None" = None,
         snapshot_log: "list[SupermarketSnapshot] | None" = None,
         shortfall_log: "list[ShortfallEvent] | None" = None,
     ):
-        self.kenv = kenv
+        self.menv = menv
         self.event_log: list[ScheduleEvent] = (
             event_log if event_log is not None else []
         )
@@ -52,12 +52,12 @@ class Recorder:
         self._last_n_available: "dict[tuple[int, str], int]" = {}
 
     def _line_name(self, line_id: int) -> str:
-        return self.kenv.lines[line_id - 1].line_name
+        return self.menv.lines[line_id - 1].line_name
 
     def __getattr__(self, name):
         # Anything a caller reads that isn't defined on Recorder itself
-        # (env, lines, cfg, ...) — delegate to the real kenv.
-        return getattr(self.kenv, name)
+        # (env, lines, cfg, ...) — delegate to the real menv.
+        return getattr(self.menv, name)
 
     def log_event(self, event) -> None:
         """The one write channel for ScheduleEvents."""
@@ -91,14 +91,14 @@ class Recorder:
 
         self.snapshot_log.append(
             SupermarketSnapshot(
-                t=self.kenv.env.now,
+                t=self.menv.env.now,
                 line_id=line_id,
                 line_name=self._line_name(line_id),
                 product_type=product_type,
                 event_type=event_type,
                 n_available=sm.n_available,
                 pcs_partial=sm.pcs_partial,
-                batch_size=sm.batch_size,
+                card_size=sm.card_size,
                 delta_qty=delta_qty,
                 kanban_card_id=kanban_card_id,
             )

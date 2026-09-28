@@ -7,8 +7,8 @@ per-product row-by-row ledger of every stock-moving event
 strip that summarizes it.
 
 Reads telemetry.records.SupermarketSnapshot straight off
-kenv.snapshot_log (t, line_id, line_name, product_type, event_type,
-n_available, pcs_partial, batch_size, delta_qty, kanban_card_id) — the
+menv.snapshot_log (t, line_id, line_name, product_type, event_type,
+n_available, pcs_partial, card_size, delta_qty, kanban_card_id) — the
 same log reports.all.supermarket_series.build_line_units_timeseries
 reads, just walked event-by-event instead of resampled onto a bin grid.
 Kept separate from that module (single-purpose, same convention as
@@ -17,7 +17,7 @@ this report's shape (one row per raw event) is fundamentally different
 from a time-bucketed series.
 
 Two rows sharing one (line, product) pair (some supermarkets have 2
-physical rows feeding the same sachnummer) already collapse into one
+physical rows feeding the same product_number) already collapse into one
 stream here for free: Recorder.record_supermarket() has always written
 at (line_id, product_type) granularity, never per physical row, so
 there is nothing to merge — see reports.all.supermarket_series's
@@ -37,7 +37,7 @@ Two things are filtered out of both the ledger and the KPI strip below
 production tick that only bumps pcs_partial, never n_available — zero
 information for this report, see _NOISE_EVENT_TYPES), and any (line,
 product) pair that never actually held or moved kanban stock at all
-(see _has_kanban_activity) — a Supermarket row that's configured but
+(see _has_pull_activity) — a Supermarket row that's configured but
 never saw a real withdrawal/deposit, which otherwise shows up as an
 all-zero KPI block adding noise rather than information.
 """
@@ -51,7 +51,7 @@ from domain.epoch import compute_epoch
 
 if TYPE_CHECKING:
     from domain.config import SimConfig
-    from sim.resources.environment import KanbanSimEnvironment
+    from sim.resources.environment import MixedSimEnvironment
     from telemetry.records import SupermarketSnapshot
 
 
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 def _format_time(t: float, sim_epoch: "_dt.datetime") -> str:
     """
     'DD.MM.YYYY HH:MM:SS' — sim_epoch + timedelta(seconds=t), same
-    (dt - rt.sim_epoch)-style mapping sim.fill.pull.withdrawal uses, just
+    (dt - ctx.sim_epoch)-style mapping sim.fill.pull.withdrawal uses, just
     inverted. sim_epoch is always a real datetime by the time this is
     called (see _resolve_sim_epoch — domain.epoch.compute_epoch() is a
     fixed constant, SIM_START, never None), so this always renders a
@@ -71,11 +71,11 @@ def _format_time(t: float, sim_epoch: "_dt.datetime") -> str:
     return (sim_epoch + _dt.timedelta(seconds=t)).strftime("%d.%m.%Y %H:%M:%S")
 
 
-def _resolve_sim_epoch(kenv, sim_epoch: "Optional[_dt.datetime]") -> "_dt.datetime":
+def _resolve_sim_epoch(menv, sim_epoch: "Optional[_dt.datetime]") -> "_dt.datetime":
     """
     Prefer an explicitly-passed sim_epoch (a caller that has the owning
-    RunContext handy, e.g. api/legacy.py, can pass rt.sim_epoch straight
-    through); otherwise kenv.sim_epoch if the environment happens to
+    RunContext handy, e.g. api/legacy.py, can pass ctx.sim_epoch straight
+    through); otherwise menv.sim_epoch if the environment happens to
     carry its own copy (reports/ modules never import
     sim.context.RunContext directly — see this package's "domain +
     telemetry only" import rule — so that's a best-effort duck-typed
@@ -94,9 +94,9 @@ def _resolve_sim_epoch(kenv, sim_epoch: "Optional[_dt.datetime]") -> "_dt.dateti
     """
     if sim_epoch is not None:
         return sim_epoch
-    kenv_epoch = getattr(kenv, "sim_epoch", None)
-    if kenv_epoch is not None:
-        return kenv_epoch
+    menv_epoch = getattr(menv, "sim_epoch", None)
+    if menv_epoch is not None:
+        return menv_epoch
     return compute_epoch()
 
 
@@ -110,12 +110,12 @@ def _resolve_sim_epoch(kenv, sim_epoch: "Optional[_dt.datetime]") -> "_dt.dateti
 # bumps pcs_partial — see reports.pull.restmenge for that number's own
 # dedicated report). Excluded here rather than upstream in
 # telemetry.recorder.Recorder, since the raw event still exists on
-# kenv.snapshot_log for anything else that might want it — this report
+# menv.snapshot_log for anything else that might want it — this report
 # just doesn't display it.
 _NOISE_EVENT_TYPES: frozenset[str] = frozenset({"deposit_partial"})
 
 
-def _has_kanban_activity(snaps: "list[SupermarketSnapshot]") -> bool:
+def _has_pull_activity(snaps: "list[SupermarketSnapshot]") -> bool:
     """
     True iff this (line, product) stream ever actually held or moved
     stock — i.e. at least one snapshot with n_available > 0, or at
@@ -154,7 +154,7 @@ def _grouped_snapshots(
     # every snapshot they had was noise (now filtered above, so the key
     # never got created), or every real snapshot still sat at
     # n_available == 0 with no stock ever moving in or out.
-    grouped = {k: v for k, v in grouped.items() if _has_kanban_activity(v)}
+    grouped = {k: v for k, v in grouped.items() if _has_pull_activity(v)}
     return grouped
 
 
@@ -163,7 +163,7 @@ def _grouped_snapshots(
 # ---------------------------------------------------------------------------
 
 def build_inventory_timeline_payload(
-    kenv: "KanbanSimEnvironment",
+    menv: "MixedSimEnvironment",
     cfg: "SimConfig",
     line_name: Optional[str] = None,
     product_type: Optional[str] = None,
@@ -171,13 +171,13 @@ def build_inventory_timeline_payload(
 ) -> dict:
     """
     Per supermarket (line), every SupermarketSnapshot in
-    kenv.snapshot_log across every product that line carries, merged
+    menv.snapshot_log across every product that line carries, merged
     into one chronological ledger — a (line, product) pair no longer
     gets its own separate row list; instead every product's events for
     a given line are interleaved by real timestamp `t` into a single
     stream, each row still carrying its own "product" so the table can
     show what moved. Two rows sharing one (line, product) pair (a
-    supermarket with 2 physical rows feeding the same sachnummer, see
+    supermarket with 2 physical rows feeding the same product_number, see
     module docstring) were already one stream before this merge; this
     step additionally folds every *other* product on that same line
     into that one stream too, matching how the dashboard prints one
@@ -203,14 +203,14 @@ def build_inventory_timeline_payload(
     never land on the exact same float second in practice.
 
     cfg is accepted (unused here) only to keep this function's call
-    signature uniform with every other reports/ builder's (kenv, cfg, ...)
+    signature uniform with every other reports/ builder's (menv, cfg, ...)
     shape, the same reason
     reports.all.supermarket_series.build_supermarket_state_payload
     takes it too.
     """
-    epoch = _resolve_sim_epoch(kenv, sim_epoch)
+    epoch = _resolve_sim_epoch(menv, sim_epoch)
     grouped = _grouped_snapshots(
-        getattr(kenv, "snapshot_log", None) or [], line_name, product_type
+        getattr(menv, "snapshot_log", None) or [], line_name, product_type
     )
 
     # Fold every (line, product) stream into one row list per line,
@@ -248,13 +248,13 @@ def build_inventory_timeline_payload(
 # ---------------------------------------------------------------------------
 
 def build_inventory_kpis(
-    kenv: "KanbanSimEnvironment",
+    menv: "MixedSimEnvironment",
     cfg: "SimConfig",
     line_name: Optional[str] = None,
     product_type: Optional[str] = None,
 ) -> dict:
     """
-    Per (line, product), summarizing the same kenv.snapshot_log stream
+    Per (line, product), summarizing the same menv.snapshot_log stream
     build_inventory_timeline_payload() walks:
 
       avg_inventory / min_inventory / max_inventory : n_available,
@@ -274,13 +274,13 @@ def build_inventory_kpis(
           each direction, not a net).
 
     The window for both "last value holds until" and the average's
-    denominator is [first snapshot's t, kenv.env.now] — before the first
+    denominator is [first snapshot's t, menv.env.now] — before the first
     snapshot there is no recorded state to weight, and every stream ends
     open-ended at "now".
     """
-    sim_time_s = kenv.env.now
+    sim_time_s = menv.env.now
     grouped = _grouped_snapshots(
-        getattr(kenv, "snapshot_log", None) or [], line_name, product_type
+        getattr(menv, "snapshot_log", None) or [], line_name, product_type
     )
 
     kpis_out: list[dict] = []
@@ -345,7 +345,7 @@ def build_inventory_kpis(
 # ---------------------------------------------------------------------------
 
 def build_pull_inventory_timeline_report(
-    kenv: "KanbanSimEnvironment",
+    menv: "MixedSimEnvironment",
     cfg: "SimConfig",
     line_name: Optional[str] = None,
     product_type: Optional[str] = None,
@@ -358,13 +358,13 @@ def build_pull_inventory_timeline_report(
     that same function already merges reports.pull.card_flow +
     reports.pull.shortfall by hand; done once here, in this combined
     builder, since both halves share the exact same
-    (kenv, line_name, product_type) scope and there is no other caller
+    (menv, line_name, product_type) scope and there is no other caller
     needing them kept separate.
     """
     timeline = build_inventory_timeline_payload(
-        kenv, cfg, line_name=line_name, product_type=product_type
+        menv, cfg, line_name=line_name, product_type=product_type
     )
     kpis = build_inventory_kpis(
-        kenv, cfg, line_name=line_name, product_type=product_type
+        menv, cfg, line_name=line_name, product_type=product_type
     )
     return {"timeline": timeline["supermarkets"], "kpis": kpis["supermarkets"]}

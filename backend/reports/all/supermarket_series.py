@@ -2,8 +2,8 @@
 reports/all/supermarket_series.py
 ====================================
 Two related time-bucketed Supermarket views, kept in one module because
-they read the same two logs (kenv.snapshot_log grouped by (line_name,
-product_type), kenv.exotic_snapshot_log) and share the same bin-edge
+they read the same two logs (menv.snapshot_log grouped by (line_name,
+product_type), menv.exotic_snapshot_log) and share the same bin-edge
 helpers from reports/binning.py:
 
   - build_line_units_timeseries()      per-line, per-product
@@ -134,7 +134,7 @@ def build_line_units_timeseries(
 # ---------------------------------------------------------------------------
 
 def build_supermarket_state_payload(
-    kenv, cfg: "SimConfig", n_bins: Optional[int] = None, time_unit: str = "h",
+    menv, cfg: "SimConfig", n_bins: Optional[int] = None, time_unit: str = "h",
 ) -> dict:
     """
     Time-bucketed, per-physical-row Supermarket occupancy for the "All
@@ -142,11 +142,11 @@ def build_supermarket_state_payload(
     extras:
 
     1. "Main runner" rows — several physical rows can share the same
-       (line, sachnummer); each row's series is the shared group's time
+       (line, product_number); each row's series is the shared group's time
        series run through a deterministic first-fill distribution across
        the group's rows in row_number order, at every bin.
     2. "Exotic" rows — one entry per physical row, with a REAL per-row
-       time series built from kenv.exotic_snapshot_log.
+       time series built from menv.exotic_snapshot_log.
     3. "restmenge_series" (per line) — Main-runner groups' pcs_partial
        over time.
     4. "exotic_routed_products" (per line) — Kanban-eligible products
@@ -154,21 +154,21 @@ def build_supermarket_state_payload(
        the line's shared Exotic pool instead.
     """
     divisor = _DIVISORS[time_unit]
-    sim_time_s = kenv.env.now
+    sim_time_s = menv.env.now
     if n_bins is None:
         n_bins = max(1, round(sim_time_s / 600.0))
 
-    line_id_by_name: dict[str, int] = {line.line_name: line.line_id for line in kenv.lines}
-    kenv_supermarkets: dict = getattr(kenv, "supermarkets", None) or {}
+    line_id_by_name: dict[str, int] = {line.line_name: line.line_id for line in menv.lines}
+    menv_supermarkets: dict = getattr(menv, "supermarkets", None) or {}
 
     main_groups: dict[tuple[str, str], list] = {}
-    for snap in (getattr(kenv, "snapshot_log", None) or []):
+    for snap in (getattr(menv, "snapshot_log", None) or []):
         main_groups.setdefault((snap.line_name, snap.product_type), []).append(snap)
     for snaps in main_groups.values():
         snaps.sort(key=lambda s: s.t)
 
     exotic_groups: dict[tuple[str, int], list] = {}
-    for snap in (getattr(kenv, "exotic_snapshot_log", None) or []):
+    for snap in (getattr(menv, "exotic_snapshot_log", None) or []):
         exotic_groups.setdefault((snap.line, snap.row_number), []).append(snap)
     for snaps in exotic_groups.values():
         snaps.sort(key=lambda s: s.t)
@@ -178,13 +178,13 @@ def build_supermarket_state_payload(
     lines_out = []
     for line_name, slot_cfgs in (cfg.supermarkets or {}).items():
         line_id = line_id_by_name.get(line_name)
-        supermarket_lane = kenv_supermarkets.get(line_id, {}) if line_id is not None else {}
+        supermarket_lane = menv_supermarkets.get(line_id, {}) if line_id is not None else {}
 
         main_runner_groups: dict[str, list] = {}
         for slot in slot_cfgs:
-            if slot.is_exotic or not slot.sachnummer:
+            if slot.is_exotic or not slot.product_number:
                 continue
-            main_runner_groups.setdefault(slot.sachnummer, []).append(slot)
+            main_runner_groups.setdefault(slot.product_number, []).append(slot)
         for rows in main_runner_groups.values():
             rows.sort(key=lambda s: s.row_number)
 
@@ -195,7 +195,7 @@ def build_supermarket_state_payload(
                 series = [
                     {
                         "t": round(edge_s / divisor, 4),
-                        "sachnummer": products[0]["sachnummer"] if products else None,
+                        "product_number": products[0]["product_number"] if products else None,
                         "n_cards": sum(p["push_count"] for p in products),
                         "products": products,
                     }
@@ -210,8 +210,8 @@ def build_supermarket_state_payload(
                     "series": series,
                 })
             else:
-                group_rows = main_runner_groups.get(slot.sachnummer, [slot])
-                snaps = main_groups.get((line_name, slot.sachnummer), [])
+                group_rows = main_runner_groups.get(slot.product_number, [slot])
+                snaps = main_groups.get((line_name, slot.product_number), [])
                 series = []
                 for edge_s in edges:
                     n_available, pcs_partial = _sm_state_at(snaps, edge_s, ("n_available", "pcs_partial"))
@@ -232,11 +232,11 @@ def build_supermarket_state_payload(
                     "row_number": slot.row_number,
                     "type": slot.slot_type or "Main runner",
                     "is_exotic": False,
-                    "sachnummer": slot.sachnummer,
+                    "product_number": slot.product_number,
                     "capacity": slot.capacity,
                     "group_capacity": sum(s.capacity for s in group_rows),
                     "shared_rows": [s.row_number for s in group_rows],
-                    "batch_size": getattr(supermarket_lane.get(slot.sachnummer), "batch_size", None),
+                    "card_size": getattr(supermarket_lane.get(slot.product_number), "card_size", None),
                     "series": series,
                 })
 
@@ -254,18 +254,18 @@ def build_supermarket_state_payload(
             restmenge_series.append(pt)
 
         exotic_routed_products = []
-        for sachnr, sm in sorted(supermarket_lane.items()):
+        for product_number, sm in sorted(supermarket_lane.items()):
             if not getattr(sm, "is_exotic_routed", False):
                 continue
-            snaps = main_groups.get((line_name, sachnr), [])
+            snaps = main_groups.get((line_name, product_number), [])
             series = []
             for edge_s in edges:
                 n_available, pcs_partial = _sm_state_at(snaps, edge_s, ("n_available", "pcs_partial"))
                 series.append({"t": round(edge_s / divisor, 4), "n_cards": n_available, "pcs_partial": pcs_partial})
             exotic_routed_products.append({
-                "sachnummer": sachnr,
+                "product_number": product_number,
                 "capacity": sm.capacity,
-                "batch_size": sm.batch_size,
+                "card_size": sm.card_size,
                 "series": series,
             })
 

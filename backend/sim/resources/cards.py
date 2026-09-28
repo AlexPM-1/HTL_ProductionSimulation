@@ -1,8 +1,8 @@
 """
 sim/resources/cards.py
 =======================
-KanbanCard — one physical Kanban card. Created by
-KanbanSimEnvironment.create_card() (sim.resources.environment) and
+PullCard — one physical Kanban card. Created by
+MixedSimEnvironment.create_card() (sim.resources.environment) and
 circulated by sim.produce/sim.fill.pull/sim.drain as it moves through
 the pull loop.
 """
@@ -16,13 +16,13 @@ from typing import Optional
 @dataclass
 class CardHistoryEntry:
     """
-    One order-cycle's worth of timing for a KanbanCard — i.e. everything
+    One order-cycle's worth of timing for a PullCard — i.e. everything
     that happened to this physical card between being withdrawn for order
     `order_id` and being repositioned back onto its Supermarket shelf.
 
-    Since card_id is PERMANENT (see KanbanCard's docstring), a card
+    Since card_id is PERMANENT (see PullCard's docstring), a card
     accumulates one of these per trip round the loop, appended to
-    KanbanCard.history — so per-order production reporting (which line,
+    PullCard.history — so per-order production reporting (which line,
     which card, exactly when) can be reconstructed straight off the card
     without needing a separate per-card telemetry stream.
 
@@ -55,7 +55,7 @@ class CardHistoryEntry:
                                  (sim.drain.pull_turn)
     t_production_start          : moment production actually started on
                                  this card (sim.drain.pull_turn /
-                                 sim.produce.run_kanban_batch)
+                                 sim.produce.run_pull_batch)
     t_production_end            : moment this card's package finished
                                  production (sim.fill.pull.cards
                                  ._return_card_to_supermarket's `t`)
@@ -78,10 +78,10 @@ class CardHistoryEntry:
 
 
 @dataclass
-class KanbanCard:
+class PullCard:
     """
     A physical Kanban card — one per circulating batch-slot for a given
-    (line, product). card_id is PERMANENT: the same KanbanCard instance
+    (line, product). card_id is PERMANENT: the same PullCard instance
     is reused every loop (in_supermarket -> withdrawn ->
     in_collection_box -> in_batch_collector -> released_to_chute ->
     in_production -> in_supermarket), never recreated. That makes `transitions` the card's
@@ -92,16 +92,16 @@ class KanbanCard:
     Attributes
     ----------
     card_id      : permanent unique identifier, assigned by
-                   KanbanSimEnvironment.create_card()
-    product_type : sachnummer this card is dedicated to for its whole
+                   MixedSimEnvironment.create_card()
+    product_type : product_number this card is dedicated to for its whole
                    life (no product-switching on a card in this design)
     line_id      : 1-based line this card circulates on
-    batch_size   : pieces represented by this card (from KanbanCardConfig
+    card_size   : pieces represented by this card (from PullCardConfig
                    for this product — fixed, so fixed per card)
     priority     : "H" | "M" | "L" — (re)set at each withdrawal from the
-                   CustomerDemandKanban row that triggered it; carried
+                   PullCustomerDemand row that triggered it; carried
                    through collection box / batch collector / chute so
-                   KanbanChuteResource can order releases on it
+                   ChuteResource can order releases on it
     state        : current position in the card's state machine; one of
                    the six state-machine values listed above
     transitions  : list of (state, sim_time) tuples, one appended per
@@ -120,7 +120,7 @@ class KanbanCard:
     card_id: int
     product_type: str
     line_id: int
-    batch_size: int
+    card_size: int
     priority: str = "M"
     state: str = "in_supermarket"
     transitions: list[tuple[str, float]] = field(default_factory=list)
@@ -157,6 +157,6 @@ class KanbanCard:
 
     def __repr__(self) -> str:
         return (
-            f"KanbanCard(id={self.card_id}, product={self.product_type}, "
+            f"PullCard(id={self.card_id}, product={self.product_type}, "
             f"line={self.line_id}, state={self.state}, priority={self.priority})"
         )

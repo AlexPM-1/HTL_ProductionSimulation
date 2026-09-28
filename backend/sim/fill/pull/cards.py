@@ -8,14 +8,14 @@ back onto a Supermarket. Called from sim.drain.pull_turn.
 from __future__ import annotations
 
 from sim.context import RunContext
-from sim.resources.environment import KanbanSimEnvironment
+from sim.resources.environment import MixedSimEnvironment
 from sim.resources.supermarket import SupermarketResource
-from sim.resources.cards import KanbanCard
+from sim.resources.cards import PullCard
 
 
-def _return_card_to_supermarket(rt: RunContext, kenv: KanbanSimEnvironment,
+def _return_card_to_supermarket(ctx: RunContext, menv: MixedSimEnvironment,
                                  sm: SupermarketResource,
-                                 card: KanbanCard, t: float, line_name: str,
+                                 card: PullCard, t: float, line_name: str,
                                  line_id: int, verbose: bool):
     """
     SimPy generator (fire-and-forget via env.process()).
@@ -31,12 +31,13 @@ def _return_card_to_supermarket(rt: RunContext, kenv: KanbanSimEnvironment,
     picks up the recent production, as intended.
 
     This is also the upstream-blocking mechanism for a full shelf: `sm.store`
-    is a bounded simpy.Store (capacity = KanbanTimingConfig.supermarket_capacity_cards,
-    enforced in build_kanban_environment). Once a lane already holds that
+    is a bounded simpy.Store (capacity = the summed "Capacity" of this
+    product/line's "Main runner" row(s) on the "Supermarkets" sheet,
+    enforced in build_mixed_environment). Once a lane already holds that
     many cards, this `yield sm.store.put(card)` blocks until a withdrawal
     frees up a slot — no manual semaphore/capacity check needed here.
     """
-    env = kenv.env
+    env = menv.env
 
     # Per-card completion point: this is also where the card's owning
     # OrderRecordPull learns which line actually fulfilled it — done
@@ -47,7 +48,7 @@ def _return_card_to_supermarket(rt: RunContext, kenv: KanbanSimEnvironment,
     if entry is not None:
         entry.t_production_end = round(t, 3)
         entry.t_reposition_supermarket = round(t, 3)
-        order = kenv.order_registry.get(entry.order_id)
+        order = menv.order_registry.get(entry.order_id)
         if order is not None:
             order.record_assignment(line_name, card.card_id)
 
@@ -56,7 +57,7 @@ def _return_card_to_supermarket(rt: RunContext, kenv: KanbanSimEnvironment,
     # `yield env.timeout(return_time_s)` right here, before the put().
     card.record_transition("in_supermarket", t)
     yield sm.store.put(card)
-    rt.record_supermarket(
+    ctx.record_supermarket(
         line_id, card.product_type, "deposit_batch", sm,
         kanban_card_id=card.card_id,
     )

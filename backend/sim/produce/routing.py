@@ -2,7 +2,7 @@
 sim/produce/routing.py
 =======================
 material_stored_types() — used by sim.produce.run_order and
-sim.produce.run_kanban_batch. `_active_buffer_sequence` (a related
+sim.produce.run_pull_batch. `_active_buffer_sequence` (a related
 routing helper) lives in domain/products.py instead, and is imported
 directly from there by both of those modules.
 """

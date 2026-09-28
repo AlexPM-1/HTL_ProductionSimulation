@@ -4,10 +4,10 @@ reports/serialization.py
 JSON-safety helpers for dataclass-shaped telemetry (to_jsonable), plus
 flat dumpers for the raw event/snapshot/shortfall logs
 (event_log_to_dicts, dump_gantt_json, snapshot_log_to_dicts,
-shortfall_log_to_dicts, dump_kanban_events_json) used for audit trails,
+shortfall_log_to_dicts, dump_pull_events_json) used for audit trails,
 debugging, and writing a run's payloads straight to a JSON file.
 
-dump_kanban_events_json builds its "card_flow" key from two separate
+dump_pull_events_json builds its "card_flow" key from two separate
 calls — reports.pull.card_flow.build_card_flow_payload() and
 reports.pull.shortfall.build_shortfall_payload() — and merges the
 results, since those two report builders are kept separate (single-
@@ -30,7 +30,7 @@ from reports.all.supermarket_series import build_line_units_timeseries
 from telemetry.records import ScheduleEvent
 
 if TYPE_CHECKING:
-    from sim.resources.environment import KanbanSimEnvironment
+    from sim.resources.environment import MixedSimEnvironment
     from telemetry.records import SupermarketSnapshot, ShortfallEvent
 
 
@@ -98,8 +98,8 @@ def shortfall_log_to_dicts(shortfall_log: "Iterable[ShortfallEvent]") -> list[di
     return [dataclasses.asdict(e) for e in shortfall_log]
 
 
-def dump_kanban_events_json(
-    kenv: "KanbanSimEnvironment",
+def dump_pull_events_json(
+    menv: "MixedSimEnvironment",
     snapshot_log: "Iterable[SupermarketSnapshot]",
     path: str,
     n_bins: int | None = None,
@@ -117,13 +117,13 @@ def dump_kanban_events_json(
     assembles the same payload.
     """
     line_ids = sorted({
-        getattr(c, "line_id", None) for c in kenv.card_registry.values()
+        getattr(c, "line_id", None) for c in menv.card_registry.values()
         if getattr(c, "line_id", None) is not None
     })
-    card_flow = build_card_flow_payload(kenv, n_bins=n_bins, time_unit=time_unit)
+    card_flow = build_card_flow_payload(menv, n_bins=n_bins, time_unit=time_unit)
     card_flow.update(build_shortfall_payload(
         line_ids=line_ids,
-        sim_time_s=kenv.env.now,
+        sim_time_s=menv.env.now,
         n_bins=n_bins,
         time_unit=time_unit,
         shortfall_log=shortfall_log,
@@ -131,7 +131,7 @@ def dump_kanban_events_json(
     payload = {
         "card_flow": card_flow,
         "line_units": build_line_units_timeseries(
-            snapshot_log, kenv.env.now, n_bins=n_bins, time_unit=time_unit
+            snapshot_log, menv.env.now, n_bins=n_bins, time_unit=time_unit
         ),
     }
     with open(path, "w", encoding="utf-8") as f:

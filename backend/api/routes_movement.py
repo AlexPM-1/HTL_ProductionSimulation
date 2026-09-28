@@ -6,7 +6,7 @@ card lookups: /plant_structure, /movement_state, /part_ids, /part_trace,
 /card_ids, /card_trace. Each delegates to a builder in the reports/
 package and reads the cached run from api.runs.run_store.
 
-A mixed run keeps BOTH classes (pull and push) on one continuous kenv/
+A mixed run keeps BOTH classes (pull and push) on one continuous menv/
 clock, so there's a single set of endpoints here rather than separate
 push/kanban variants. Instead:
   - "mode" (push vs kanban) on the movement page maps to a `cls` filter
@@ -14,7 +14,7 @@ push/kanban variants. Instead:
     reusing reports.kpi.by_class.build_class_product_sets — the same
     split already used for kpi_by_class.
   - card endpoints are naturally kanban-only regardless of `cls`, because
-    kenv.card_registry is only ever populated for class-1 parts — passing
+    menv.card_registry is only ever populated for class-1 parts — passing
     cls='push' to a card endpoint will just come back empty, not an
     error.
   - windowing uses day_index (0-based from sim start) + optional hour
@@ -47,9 +47,9 @@ def _class_filter_products(cls: Optional[str], cfg) -> Optional[set[str]]:
     than in reports/) because reports/ must not import fastapi."""
     if cls is None or cls == "all":
         return None
-    kanban_products, push_products = build_class_product_sets(cfg)
+    pull_products, push_products = build_class_product_sets(cfg)
     if cls == "pull":
-        return kanban_products
+        return pull_products
     if cls == "push":
         return push_products
     raise HTTPException(status_code=400, detail="cls must be one of: pull, push, all")
@@ -61,8 +61,8 @@ def mixed_plant_structure(line_id: Optional[int] = None):
     Collector product rows + trigger amounts, Chute frozen-zone size) —
     see build_plant_structure_payload's docstring. Requires a prior
     POST /api/simulate_mixed, same as every other /api/mixed/* endpoint."""
-    kenv, cfg = run_store.require()
-    return build_plant_structure_payload(kenv, cfg, line_id=line_id)
+    menv, cfg = run_store.require()
+    return build_plant_structure_payload(menv, cfg, line_id=line_id)
 
 
 @app.get("/api/mixed/movement_state")
@@ -90,16 +90,16 @@ def mixed_movement_state(
         [1, _MAX_MOVEMENT_FRAMES].
       - n_frames: explicit override. Must be between 1 and
         _MAX_MOVEMENT_FRAMES.
-    Each frame re-scans the ENTIRE kenv.card_registry, so both knobs are
+    Each frame re-scans the ENTIRE menv.card_registry, so both knobs are
     capped — narrow the window via day_index/hour first if you need finer
     resolution than the cap allows over a wide window.
     """
     if time_unit not in TIME_UNIT_DIVISORS:
         raise HTTPException(status_code=400, detail="time_unit must be one of: h, min, s")
-    kenv, cfg = run_store.require()
+    menv, cfg = run_store.require()
 
     window = run_store.day_window_s(day_index, hour)
-    start_s, end_s = window if window is not None else (0.0, kenv.env.now)
+    start_s, end_s = window if window is not None else (0.0, menv.env.now)
     window_s = max(0.0, end_s - start_s)
 
     if n_frames is not None:
@@ -116,7 +116,7 @@ def mixed_movement_state(
     frames = [
         {
             "t": round(edge_s / divisor, 4),
-            "lines": build_movement_state_payload(kenv, cfg, edge_s, line_id=line_id, include_push=include_push),
+            "lines": build_movement_state_payload(menv, cfg, edge_s, line_id=line_id, include_push=include_push),
         }
         for edge_s in edges
     ]
@@ -126,8 +126,8 @@ def mixed_movement_state(
 @app.get("/api/mixed/part_ids")
 def mixed_part_ids(line_id: Optional[int] = None, cls: Optional[str] = None):
     """Cheap piece dropdown, not scoped to a day/hour."""
-    kenv, cfg = run_store.require()
-    payload = build_part_ids_payload(kenv, line_id=line_id)
+    menv, cfg = run_store.require()
+    payload = build_part_ids_payload(menv, line_id=line_id)
     keep = _class_filter_products(cls, cfg)
     if keep is not None:
         payload["parts"] = [p for p in payload["parts"] if p["product_type"] in keep]
@@ -144,11 +144,11 @@ def mixed_part_trace(
     include_wip: bool = False,
 ):
     """Per-piece station trace for the movement page's 'piece' entity type."""
-    kenv, cfg = run_store.require()
+    menv, cfg = run_store.require()
     if time_unit not in TIME_UNIT_DIVISORS:
         raise HTTPException(status_code=400, detail="time_unit must be one of: h, min, s")
     payload = build_part_trace_payload(
-        kenv,
+        menv,
         time_unit=time_unit,
         include_wip=include_wip,
         line_id=line_id,
@@ -169,9 +169,9 @@ def mixed_card_ids(
     hour: Optional[int] = None,
 ):
     """Cheap card dropdown for one day/hour window — cards are always class-1 (kanban) only."""
-    kenv, _cfg = run_store.require()
+    menv, _cfg = run_store.require()
     payload = build_card_trace_payload(
-        kenv,
+        menv,
         time_unit="s",
         line_id=line_id,
         day_window_s=run_store.day_window_s(day_index, hour),
@@ -192,11 +192,11 @@ def mixed_card_trace(
     time_unit: str = "s",
 ):
     """Single card's transition history for the movement page's 'card' entity type."""
-    kenv, _cfg = run_store.require()
+    menv, _cfg = run_store.require()
     if time_unit not in TIME_UNIT_DIVISORS:
         raise HTTPException(status_code=400, detail="time_unit must be one of: h, min, s")
     payload = build_card_trace_payload(
-        kenv,
+        menv,
         time_unit=time_unit,
         card_id=card_id,
         line_id=line_id,
